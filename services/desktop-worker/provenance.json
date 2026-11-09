@@ -1,0 +1,60 @@
+{
+  "source": "qqgpt-chat-bridge",
+  "version": "1.21.0",
+  "license": "GPL-3.0-or-later",
+  "notes": "Copied independently. Native dispatch restricted to ChatGPT; shared legacy partial methods retained for compilation. No QQ engine, dashboard, config or runtime state copied.",
+  "files": [
+    {
+      "path": "src/platform/windows/Bridge.cs",
+      "sha256": "d6cf14179aee38af90458cbd107d03fa083c510e35402d2b206a32b26e449fe9"
+    },
+    {
+      "path": "src/platform/windows/FileBridge.cs",
+      "sha256": "420d2eecfe0c6992a9ea45fdb91f58ad1ddaea97b48d5e5541c6be83dfd575f5"
+    },
+    {
+      "path": "src/platform/windows/GroupBridge.cs",
+      "sha256": "abd0343bcf605726522ae13a78aea447af76ffccd5f4458993c417bdfc976aa8"
+    },
+    {
+      "path": "src/platform/windows/ImageBridge.cs",
+      "sha256": "7ebd4ac98feb461cf37d3811b31591d42b8c2cb7cbdcac1ed3184a7f06bc1417"
+    },
+    {
+      "path": "src/platform/windows/MentionBridge.cs",
+      "sha256": "9cba95945039e27c4668f7e0a0251d2e06ecca61391c2d05de1cb0951df8d9b1"
+    },
+    {
+      "path": "src/platform/windows/QuoteBridge.cs",
+      "sha256": "3046591b4d33c7632267194f3a55e36b1df4583e43331644b619fe7620ac1ea0"
+    },
+    {
+      "path": "src/platform/windows/RecoveryBridge.cs",
+      "sha256": "63ee2d72a24f717c530efc434de594abac5a1542416742f80ded50b2472ea771"
+    },
+    {
+      "path": "src/platform/windows/TableBridge.cs",
+      "sha256": "969111db1e11ff69cef27e51241046d48fc45906a44d41283083ee7248d65a38"
+    },
+    {
+      "path": "src/ai/chatgpt.js",
+      "sha256": "2b1c8e2e5437c7362b42cae1dbb7a2767aa05d7d47e7fe99e78218eb807d55a3"
+    },
+    {
+      "path": "src/media/reply-format.js",
+      "sha256": "8d64f9ebf186ead2455b27bb7532b404d797726b24ba1b029d1488067b38bb62"
+    },
+    {
+      "path": "src/media/text-syntax.js",
+      "sha256": "a08afcae689a3a3eb28a3afb1ff5caa6a27826d0dc702a3798c9781478008904"
+    },
+    {
+      "path": "src/media/links.js",
+      "sha256": "46a3c7cb49701f2ce6126ddb5fa9b63200c87777bf63ff9d6b5a3531bd5f7b4c"
+    },
+    {
+      "path": "src/media/source-blocks.js",
+      "sha256": "334aa3c0669396cc6501d50f90d2ef3cba9841783c5e9eca5b096d624db82ded"
+    }
+  ]
+}
