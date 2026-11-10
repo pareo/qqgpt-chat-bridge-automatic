@@ -1,0 +1,14 @@
+{
+  "manifest_version": 2,
+  "id": "local.daifeilong",
+  "name": "大肥龙扩展",
+  "description": "人设切换、参考图生图、聊天表情和可读表格",
+  "version": "0.2.0",
+  "author": {"name": "Daifeilong Project", "url": "https://github.com/pareo"},
+  "urls": {"repository": "https://github.com/pareo/qqgpt-chat-bridge", "homepage": "https://github.com/Mai-with-u/MaiBot"},
+  "license": "GPL-3.0-or-later",
+  "host_application": {"min_version": "1.4.3", "max_version": "1.4.99"},
+  "sdk": {"min_version": "2.22.1", "max_version": "2.98.99"},
+  "capabilities": ["send.text", "send.image", "files.upload", "files.send", "personality.list", "personality.get_current", "personality.switch", "render.html2png", "maisaka.context.resolve_image"],
+  "i18n": {"default_locale": "zh-CN"}
+}

@@ -1,0 +1,46 @@
+{
+  "bot": {"account": "", "nickname": "大肥龙", "aliases": ["GPT娘", "gpt娘"], "mode": "大肥龙模式", "listen_mode": "allowlist"},
+  "groups": [{"name": "测试", "id": ""}],
+  "api": {
+    "base_url": "http://host.docker.internal:18080/v1",
+    "client_type": "openai_responses",
+    "chat_model": "",
+    "planner_model": "",
+    "vision_model": "",
+    "embedding_model": "",
+    "reasoning_effort": "medium",
+    "planner_reasoning_effort": "low",
+    "timeout_seconds": 90,
+    "attempts": 3
+  },
+  "images": {
+    "backend": "api",
+    "enabled": false,
+    "model": "",
+    "base_url": "",
+    "quality": "high",
+    "size": "1024x1024",
+    "timeout_seconds": 240,
+    "casual_probability": 0.8,
+    "cooldown_seconds": 10,
+    "max_output_mib": 20
+  },
+  "chat": {"talk_value": 0.5, "debounce": "fast", "steering": true, "artificial_typos": false, "typing_speed": 0},
+  "desktop_worker": {
+    "enabled": false,
+    "backend": "chatgpt-app",
+    "url": "http://host.docker.internal:18120",
+    "listen_host": "127.0.0.1",
+    "port": 18120,
+    "conversation_title": "大肥龙工具",
+    "model": "current",
+    "reasoning_effort": "current",
+    "timeout_seconds": 240,
+    "queue_wait_seconds": 60,
+    "poll_ms": 700,
+    "max_queue": 4
+  },
+  "agent_worker": {"enabled": false, "backend": "codex-acp", "url": "http://codex-worker:18121", "model": "", "reasoning_effort": "medium", "search_reasoning_effort": "low", "search_max_rounds": 2, "timeout_seconds": 240, "queue_wait_seconds": 60},
+  "files": {"max_mib": 10},
+  "ports": {"maibot": 18001, "napcat": 16099}
+}

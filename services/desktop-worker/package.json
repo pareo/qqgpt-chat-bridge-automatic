@@ -1,0 +1,8 @@
+{
+  "name": "daifeilong-desktop-worker",
+  "private": true,
+  "version": "0.1.0",
+  "license": "GPL-3.0-or-later",
+  "engines": {"node": ">=22.13.0"},
+  "scripts": {"start": "node src/server.js", "test": "node --test test/*.test.js"}
+}

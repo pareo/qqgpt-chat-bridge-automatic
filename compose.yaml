@@ -1,0 +1,55 @@
+name: daifeilong-maibot
+services:
+  core:
+    image: daifeilong-maibot-core:1.4.3
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    init: true
+    entrypoint: ["python", "/project/scripts/runtime_guard.py"]
+    restart: "no"
+    stop_grace_period: 90s
+    environment:
+      TZ: Asia/Hong_Kong
+      HTTP_HOST: 0.0.0.0
+      MAIBOT_LEGACY_0X_UPGRADE_CONFIRMED: "1"
+      DAIFEILONG_CONFIG_DIR: /project/config/local
+    ports:
+      - "127.0.0.1:${MAIBOT_PORT:-18001}:8001"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./config/generated/core:/MaiMBot/config
+      - ./config/local:/project/config/local:ro
+      - ./config/examples:/project/config/examples:ro
+      - ./plugins:/project/plugins:ro
+      - ./vendor/qq-connector:/MaiMBot/plugins/qq-connector:ro
+      - ./plugins/daifeilong:/MaiMBot/plugins/daifeilong:ro
+      - ./config/generated/connector.toml:/MaiMBot/plugins/qq-connector/config.toml
+      - ./config/generated/plugin.toml:/MaiMBot/plugins/daifeilong/config.toml
+      - ./data/core:/MaiMBot/data
+      - ./config/generated/host:/MaiMBot/host
+      - ./data/bots:/MaiMBot/bots
+      - ./data/depends:/MaiMBot/depends-data
+      - ./logs/core:/MaiMBot/logs
+      - ./scripts:/project/scripts:ro
+      - ./tests:/project/tests:ro
+    healthcheck:
+      test: ["CMD", "python", "/project/scripts/runtime_status.py"]
+      interval: 20s
+      timeout: 15s
+      retries: 3
+      start_period: 60s
+  napcat:
+    image: ${NAPCAT_IMAGE:-mlikiowa/napcat-docker:latest}
+    restart: "no"
+    environment:
+      TZ: Asia/Hong_Kong
+      NAPCAT_UID: "1000"
+      NAPCAT_GID: "1000"
+    ports:
+      - "127.0.0.1:${NAPCAT_PORT:-16099}:6099"
+    volumes:
+      - ./config/generated/napcat:/app/napcat/config
+      - ./data/qq:/app/.config/QQ
+      - ./data/core:/MaiMBot/data

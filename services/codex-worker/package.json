@@ -1,0 +1,1 @@
+{"name":"daifeilong-codex-worker","version":"0.1.0","private":true,"engines":{"node":">=22.13"},"dependencies":{"@agentclientprotocol/codex-acp":"2.6.0"},"overrides":{"@openai/codex":"0.166.0"},"scripts":{"start":"node src/main.js","test":"node --test test/*.test.js"}}

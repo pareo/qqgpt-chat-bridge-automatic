@@ -1,0 +1,7 @@
+*
+!docker/
+!docker/**
+!services/
+!services/codex-worker/
+!services/codex-worker/**
+services/codex-worker/node_modules/

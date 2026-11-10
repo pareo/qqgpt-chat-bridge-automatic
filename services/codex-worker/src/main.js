@@ -1,0 +1,10 @@
+'use strict';
+const fs=require('node:fs');
+const {createServer}=require('./server');
+const {execute}=require('./acp');
+const config=JSON.parse(fs.readFileSync('/run/worker.json','utf8'));
+if(!config.token||config.token.length<32)throw Error('Worker token missing');
+Object.assign(config,{backend:'codex-acp',state:'/state/tasks',max_queue:4});
+fs.mkdirSync(config.state,{recursive:true});
+const {server}=createServer(config,(task,context)=>execute(task,context,config));
+server.listen(18121,'0.0.0.0',()=>console.log('Codex task service ready; authentication is checked on session creation'));

@@ -1,0 +1,22 @@
+services:
+  codex-worker:
+    build:
+      context: .
+      dockerfile: docker/CodexWorker.Dockerfile
+    image: daifeilong-codex-worker:2.6.0
+    restart: "no"
+    init: true
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 96
+    mem_limit: 1g
+    cpus: 2
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=128m,uid=1000,gid=1000"]
+    volumes:
+      - ./config/generated/codex-worker.json:/run/worker.json:ro
+      - codex-worker-state:/state
+    ports: ["127.0.0.1:18121:18121"]
+volumes:
+  codex-worker-state:
