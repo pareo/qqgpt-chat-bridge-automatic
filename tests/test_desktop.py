@@ -15,7 +15,7 @@ from PIL import Image
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'plugins'))
 from daifeilong import desktop
-from daifeilong.plugin import DaifeilongPlugin
+from daifeilong.plugin import DaifeilongPlugin, PERSONA_VOICE
 
 
 def picture():
@@ -123,8 +123,21 @@ class HybridRoutingTests(unittest.IsolatedAsyncioTestCase):
             paths=SimpleNamespace(data_dir=Path(self.cache.name)),
             logger=SimpleNamespace(info=lambda *a: None, error=lambda *a: None),
             send=SimpleNamespace(image=AsyncMock(return_value={'sent': True}), text=AsyncMock(return_value=True)),
+            personality=SimpleNamespace(get_current=AsyncMock(return_value={
+                'name': '猫娘模式', 'personality': '俏皮地接话', 'reply_style': '自然使用喵',
+            })),
+            llm=SimpleNamespace(generate=AsyncMock(return_value={'success': True, 'response': '喵，这幅画拿去挂墙上！'})),
         ))
         await self.plugin.on_load()
+
+    async def test_ordinary_reply_preserves_existing_prompt_and_applies_persona_voice(self):
+        for message_id in ('123', ''):
+            with self.subTest(message_id=message_id):
+                result = await self.plugin.supply_current_tool_evidence(
+                    session_id='origin', reply_message_id=message_id, extra_prompt='回答简短一些',
+                )
+                self.assertEqual(result['modified_kwargs']['extra_prompt'], '回答简短一些\n\n' + PERSONA_VOICE)
+        self.plugin.ctx.llm.generate.assert_not_awaited()
 
     async def test_search_returns_data_to_original_ai_without_direct_qq_send(self):
         settings = ({'desktop_worker': {'enabled': True}}, {}, {})
@@ -163,7 +176,52 @@ class HybridRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(outcome['success'])
         self.plugin.ctx.send.image.assert_awaited_once()
         self.plugin.ctx.send.text.assert_not_awaited()
+        self.plugin.ctx.llm.generate.assert_not_awaited()
         self.assertTrue((self.plugin.ctx.paths.data_dir / 'desktop/abc123/second.png').exists())
+
+    async def test_all_nine_references_keep_edit_original_and_caption_uses_live_profile(self):
+        directory = Path(self.cache.name)
+        self.plugin.directory = directory
+        characters = {}
+        for name in ('gpt', 'deepseek', 'gemini', 'grok', 'claude', 'zcode', 'minimax', 'glm', 'qwen'):
+            (directory / f'{name}.png').write_bytes(picture())
+            characters[name] = {'reference': f'{name}.png', 'appearance': f'{name} 的外观'}
+        original = base64.b64encode(picture()).decode()
+        self.plugin.ctx.maisaka = SimpleNamespace(context=SimpleNamespace(
+            resolve_image=AsyncMock(return_value={'success': True, 'image': {'binary_data_base64': original}}),
+        ))
+        config = {'images': {'backend': 'codex-acp'}}
+        raw_caption = '图片已根据要求完成。'
+        output = {'id': 'edit', 'text': raw_caption, 'artifacts': [{'id': 'pic', 'kind': 'image', 'name': 'a.png', 'raw': picture()}]}
+        worker = AsyncMock(return_value=output)
+        with patch('daifeilong.plugin.read_settings', return_value=(config, {}, characters)), patch('daifeilong.desktop.run_task', new=worker):
+            result = await self.plugin.generate_image(
+                '把全员加入这张画', characters='all', source_image_id='message', stream_id='origin',
+            )
+        self.assertTrue(result['sent'])
+        _, _, _, prompt, attachments = worker.call_args.args
+        self.assertEqual(len(attachments), 4)
+        self.assertEqual(attachments[0], ('original.png', picture()))
+        for index, name in enumerate(characters, 1):
+            self.assertIn(f'{index}. {name}：{name} 的外观', prompt)
+        for filename, raw in attachments[1:]:
+            self.assertTrue(filename.endswith('.jpg'))
+            with Image.open(io.BytesIO(raw)) as sheet:
+                self.assertEqual(sheet.size, (1440, 1920))
+                for point in ((360, 500), (1080, 500), (360, 1460)):
+                    self.assertGreater(sheet.getpixel(point)[2] - sheet.getpixel(point)[0], 200)
+        args, kwargs = self.plugin.ctx.llm.generate.call_args
+        self.assertEqual(kwargs['task_name'], 'replyer')
+        self.assertIn('俏皮地接话\n自然使用喵', args[0][0]['content'])
+        self.assertEqual(json.loads(args[0][1]['content']), {'绘图请求': '把全员加入这张画', '作图备注': raw_caption})
+        self.plugin.ctx.send.text.assert_awaited_once_with('喵，这幅画拿去挂墙上！', 'origin')
+
+    async def test_incidental_sticker_leaves_text_to_normal_reply(self):
+        result = {'id': 'abc123', 'text': '工具原文', 'artifacts': [{'id': 'pic', 'kind': 'image', 'name': 'a.png', 'raw': picture()}]}
+        outcome = await self.plugin.deliver_desktop_images(result, 'casual_sticker', 'group-b')
+        self.assertTrue(outcome['sent'])
+        self.plugin.ctx.llm.generate.assert_not_awaited()
+        self.plugin.ctx.send.text.assert_not_awaited()
 
     async def test_explicit_desktop_image_ignores_disabled_api_and_casual_probability(self):
         config = {'images': {'backend': 'desktop', 'enabled': False}, 'desktop_worker': {'enabled': True}}

@@ -13,6 +13,7 @@
     "timeout_seconds": 90,
     "attempts": 3
   },
+  "maimai": {"proxy": ""},
   "images": {
     "backend": "api",
     "enabled": false,

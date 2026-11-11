@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 import httpx
 from PIL import Image
-from .media import ImageError, reference_files
+from .media import ImageError, MAX_REFERENCE_ATTACHMENTS
 
 class DesktopError(ImageError):
     pass
@@ -17,16 +17,6 @@ def enabled(config):
     if config.get('agent_worker', {}).get('enabled'):
         return True
     return bool(config.get('desktop_worker', {}).get('enabled'))
-
-def reference_images(directory, characters, prompt, kind, names, originals):
-    if kind == 'casual_sticker' and not names.strip():
-        names = 'gpt'
-    refs = list(originals) + reference_files(directory, characters, names)
-    if len(refs) > 4:
-        raise DesktopError('一次最多上传4张原图及角色参考图')
-    if names.strip():
-        prompt += '\n角色外观以附图为准，不复制介绍文字：\n' + '\n'.join(characters[k.strip()]['appearance'] for k in names.split(',') if k.strip())
-    return prompt, refs
 
 async def run_task(config, credentials, kind, prompt, images=(), *, client=None, poll_seconds=.7):
     agent = config.get('agent_worker', {})
@@ -40,7 +30,7 @@ async def run_task(config, credentials, kind, prompt, images=(), *, client=None,
     parsed = urlsplit(base)
     if parsed.scheme not in ('http', 'https') or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path not in ('', '/'):
         raise DesktopError('任务地址须为不含路径和凭据的HTTP(S)地址')
-    if kind not in ('search', 'image', 'sticker', 'chat') or not prompt.strip() or len(prompt) > 18000 or len(images) > 4:
+    if kind not in ('search', 'image', 'sticker', 'chat') or not prompt.strip() or len(prompt) > 18000 or len(images) > MAX_REFERENCE_ATTACHMENTS:
         raise DesktopError('任务类型、提示词或参考图数量不合法')
     task_id = uuid4().hex
     payload = {'id': task_id, 'kind': kind, 'prompt': prompt, 'images': []}
