@@ -13,7 +13,11 @@ import socket
 from urllib.parse import urlsplit
 
 import httpx
-from PIL import Image, ImageOps
+from PIL import Image, ImageDraw, ImageFont, ImageOps
+
+
+MAX_REFERENCE_ATTACHMENTS = 4
+MAX_CHARACTER_REFERENCES = 12
 
 
 class ImageError(RuntimeError):
@@ -29,7 +33,10 @@ def read_settings(directory: Path) -> tuple[dict, dict, dict]:
 def reference_files(directory: Path, characters: dict, names: str) -> list[tuple[str, bytes]]:
     result = []
     root = directory.resolve()
-    for identifier in dict.fromkeys(part.strip() for part in names.split(',') if part.strip()):
+    identifiers = list(dict.fromkeys(part.strip() for part in names.split(',') if part.strip()))
+    if len(identifiers) > MAX_CHARACTER_REFERENCES:
+        raise ImageError(f'单次最多使用{MAX_CHARACTER_REFERENCES}张角色参考图')
+    for identifier in identifiers:
         if identifier not in characters:
             raise ImageError(f'未知角色 {identifier}，可选：' + ', '.join(characters))
         path = (root / characters[identifier]['reference']).resolve()
@@ -38,9 +45,60 @@ def reference_files(directory: Path, characters: dict, names: str) -> list[tuple
         if path.stat().st_size > 10 * 1024 * 1024:
             raise ImageError(f'角色参考图超过10 MiB：{identifier}')
         result.append((path.name, path.read_bytes()))
-    if len(result) > 4:
-        raise ImageError('单次最多附加4张角色参考图')
     return result
+
+
+def prepare_references(directory, characters, prompt, kind, names, originals=()):
+    """Keep edit originals separate and fit character references in the attachment budget."""
+    if kind == 'casual_sticker' and not names.strip():
+        names = 'gpt'
+    if names.strip().lower() == 'all':
+        names = ','.join(characters)
+    identifiers = list(dict.fromkeys(part.strip() for part in names.split(',') if part.strip()))
+    references = reference_files(directory, characters, names)
+    originals = list(originals)
+    available = MAX_REFERENCE_ATTACHMENTS - len(originals)
+    if available < 0 or (references and not available):
+        raise ImageError('原图占满附件位置，无法同时附加角色参考图')
+    if references:
+        descriptions = [
+            f'{index}. {identifier}：{characters[identifier]["appearance"]}'
+            for index, identifier in enumerate(identifiers, 1)
+        ]
+        prompt += '\n角色外观以参考图为准，保留辨识特征，不复制介绍文字。\n' + '\n'.join(descriptions)
+    if len(references) <= available:
+        return prompt, originals + references
+
+    # At most four panels per sheet. Keep the complete figure in each panel.
+    per_sheet = (len(references) + available - 1) // available
+    if per_sheet > 4:
+        raise ImageError('原图较多，剩余附件位置不足以容纳全部角色参考图')
+    sheets = []
+    for offset in range(0, len(references), per_sheet):
+        panels = references[offset:offset + per_sheet]
+        sheet = Image.new('RGB', (1440, 960 * ((len(panels) + 1) // 2)), 'white')
+        draw = ImageDraw.Draw(sheet)
+        font = ImageFont.load_default(size=36)
+        for index, (_, raw) in enumerate(panels):
+            left, top = (index % 2) * 720, (index // 2) * 960
+            try:
+                with Image.open(io.BytesIO(raw)) as original:
+                    if original.width * original.height > 40000000:
+                        raise ImageError(f'角色参考图像素过大：{identifiers[offset + index]}')
+                    tile = ImageOps.contain(ImageOps.exif_transpose(original).convert('RGBA'), (704, 904))
+            except (OSError, ValueError, Image.DecompressionBombError) as exc:
+                raise ImageError(f'角色参考图无法读取：{identifiers[offset + index]}') from exc
+            sheet.paste(tile, (left + (720 - tile.width) // 2, top + 48 + (904 - tile.height) // 2), tile)
+            draw.text((left + 12, top + 4), str(offset + index + 1), fill='black', font=font)
+        output = io.BytesIO()
+        sheet.save(output, format='JPEG', quality=93, subsampling=0)
+        sheets.append((f'character-references-{len(sheets) + 1}.jpg', output.getvalue()))
+    prompt += (
+        '\n角色参考图已分成带编号的图版，按编号对应上面的角色说明。'
+        '每格是独立人设参考，图版布局与数字不属于成品。'
+        '如另有改图原图，它单独放在最前面；随后才是角色图版。'
+    )
+    return prompt, originals + sheets
 
 
 def sticker_png(raw: bytes) -> bytes:
@@ -70,14 +128,7 @@ def generate(directory: Path, prompt: str, kind: str, names: str, source_images:
         raise ImageError('图片类型必须为 image、sticker 或 casual_sticker')
     if not prompt.strip() or len(prompt) > 16000:
         raise ImageError('图片提示词为空或过长')
-    if kind == 'casual_sticker' and not names.strip():
-        names = 'gpt'
-    refs = list(source_images or []) + reference_files(directory, characters, names)
-    if len(refs) > 4:
-        raise ImageError('单次最多附加4张原图和角色参考图')
-    if names.strip():
-        descriptions = [characters[key.strip()]['appearance'] for key in names.split(',') if key.strip()]
-        prompt += '\n严格以所附参考图的角色外观为准，保留辨识特征，不复制图中介绍文字。\n' + '\n'.join(descriptions)
+    prompt, refs = prepare_references(directory, characters, prompt, kind, names, source_images or ())
     if kind != 'image':
         prompt += '\n制作单张抽象搞笑的聊天反应表情，正方形构图，角色清楚可辨，避免细小文字。'
     base_url = (image_config['base_url'] or config['api']['base_url']).rstrip('/')
