@@ -138,12 +138,15 @@ class DaifeilongPlugin(MaiBotPlugin):
             )
         if action in ('', '查分帮助', 'help'):
             return await self.ctx.send.text(
-                '群里先 @大肥龙，再发指令。\n'
+                '【大肥龙帮助】群里先 @大肥龙\n'
+                '/查歌 <曲名、别名或数字 ID> [难度]　查等级和定数（如 水神2 紫、10042、10042 14+）\n'
                 '/绑定　检查水鱼授权\n'
-                '/B50　查自己的成绩图\n'
-                '/查歌 曲名或别名　查等级和定数，可加 | 紫 或 | 14+\n'
-                '/更新　查看成绩同步方式\n'
-                '/模式 [模式名]　查看或切换回复模式', stream_id,
+                '/B50　查自己的成绩图（需绑定）\n'
+                '/更新　看成绩同步教程\n'
+                '/模式 [模式名]　查看或全局切换人设\n'
+                '/help（或 /查分帮助）　查看帮助\n\n'
+                '可直接聊天、引用追问、附图提问、读文本文件（≤10 MiB）、联网查资料、深入分析、'
+                '生图、改图、做表情包（闲聊也可自动配）、表格转图片。', stream_id,
             )
         try:
             proxy, client_id, client_secret = await asyncio.to_thread(maimai.load_settings, self.directory)

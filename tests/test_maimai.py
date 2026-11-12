@@ -21,18 +21,25 @@ class MaimaiTests(unittest.IsolatedAsyncioTestCase):
             routes.append(request.url.path)
             self.assertNotIn('Authorization', request.headers)
             if request.url.host == 'www.yuzuchan.moe':
-                return httpx.Response(200, json={'content': [{'SongID': 42, 'Alias': ['别名']}]})
+                return httpx.Response(200, json={'content': [{'SongID': 42, 'Alias': ['水神2']}]})
             return httpx.Response(200, json=[
                 {'id': '42', 'title': 'Test Song', 'type': 'SD', 'level': ['3', '6', '10', '14'], 'ds': [3, 6, 10, 14.1]},
                 {'id': '10042', 'title': 'Test Song', 'type': 'DX', 'level': ['4', '7', '11', '14+'], 'ds': [4, 7, 11, 14.7]},
+                {'id': '43', 'title': 'Test Song 2', 'type': 'SD', 'level': ['3', '6', '10', '14'], 'ds': [3, 6, 10, 14.1]},
             ])
 
         async with httpx.AsyncClient(base_url=maimai.BASE, transport=httpx.MockTransport(respond)) as client:
             catalog = maimai.SongCatalog()
-            both = await catalog.describe(client, '别名｜紫')
-            one = await catalog.describe(client, '10042 | 14+')
+            both = await catalog.describe(client, '水神2　紫')
+            one = await catalog.describe(client, '10042 14+')
+            self.assertEqual(both, await catalog.describe(client, '水神2｜紫'))
+            self.assertIn('DX 绿4（定数 4）', await catalog.describe(client, '10042'))
+            self.assertIn('Test Song 2 · ID 43', await catalog.describe(client, 'Test Song 2'))
+            self.assertIn('DX 紫14+（定数 14.7）', await catalog.describe(client, 'Test Song MASTER'))
         self.assertIn('标准 紫14（定数 14.1）', both)
         self.assertIn('DX 紫14+（定数 14.7）', both)
+        self.assertNotIn('绿', both)
+        self.assertIn('DX 紫14+（定数 14.7）', one)
         self.assertNotIn('标准', one)
         self.assertEqual(len(routes), 2)
 
@@ -66,7 +73,8 @@ class MaimaiTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(pattern.search('/更新'))
         self.assertIsNotNone(pattern.search('/查分帮助'))
         self.assertEqual(pattern.search('/HELP').group('action').lower(), 'help')
-        self.assertEqual(pattern.search('/查歌 水神 | 紫').group('query'), '水神 | 紫')
+        self.assertEqual(pattern.search('/查歌 10042').group('query'), '10042')
+        self.assertEqual(pattern.search('/查歌 水神2 紫').group('query'), '水神2 紫')
         self.assertIsNone(pattern.search('/舞萌 B50'))
         self.assertIsNone(pattern.search('/B50 other-player'))
         matched_groups = pattern.search('/B50').groupdict()
@@ -89,8 +97,11 @@ class MaimaiTests(unittest.IsolatedAsyncioTestCase):
         unexpected_client.assert_not_called()
         help_text, help_origin = send.text.await_args.args
         self.assertEqual(help_origin, 'origin')
-        for usage in ('/绑定', '/B50', '/查歌', '/更新', '/模式'):
+        for usage in ('/绑定', '/B50', '/查歌 <曲名、别名或数字 ID> [难度]', '水神2 紫', '10042', '/更新', '/模式', '/help',
+                      '附图提问', '文本文件', '联网查', '深入分析', '生图', '改图', '表情包', '表格转图片'):
             self.assertIn(usage, help_text)
+        self.assertEqual(help_text.count('/查歌'), 1)
+        self.assertEqual(help_text.count('/模式'), 1)
 
     async def test_update_posts_html_once_and_reports_unknown_if_request_is_lost(self):
         paths = []
