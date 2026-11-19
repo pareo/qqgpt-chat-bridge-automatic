@@ -6,8 +6,9 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'plugins'))
 from daifeilong.reply_evidence import ReplyEvidence
 
-def message(identifier):
-    return {'item_type': 'UserMessageItem', 'parts': [{'type': 'text', 'text': f'<message msg_id="{identifier}" time="20:00" user="tester">\nquestion'}]}
+def message(identifier, *, is_self=False):
+    self_attribute = ' is_self_message="true"' if is_self else ''
+    return {'item_type': 'UserMessageItem', 'parts': [{'type': 'text', 'text': f'<message msg_id="{identifier}" time="20:00" user="tester"{self_attribute}>\nquestion'}]}
 
 def result(text='Found evidence https://example.com/source; not independently verified'):
     return {'item_type': 'FunctionCallOutputItem', 'tool_name': 'web_search', 'output': text}
@@ -40,6 +41,20 @@ class EvidenceTests(unittest.TestCase):
         cache.capture('a', [message('old'), result(), message('new')])
         self.assertIsNone(cache.prompt('a', 'new'))
         self.assertIsNone(cache.prompt('a', 'old'))
+
+    def test_progress_replies_keep_search_evidence_on_the_user_message(self):
+        cache = ReplyEvidence()
+        cache.capture('a', [
+            message('question'),
+            message('progress-1', is_self=True),
+            result('First source'),
+            message('progress-2', is_self=True),
+            result('Second source'),
+        ])
+        prompt = cache.prompt('a', 'question')
+        self.assertIn('First source\n\nSecond source', prompt)
+        self.assertIsNone(cache.prompt('a', 'progress-1'))
+        self.assertIsNone(cache.prompt('a', 'progress-2'))
 
     def test_tool_wrapper_is_not_repeated_in_replyer_but_facts_survive(self):
         from daifeilong.search_result import search_content, SEARCH_REPLY_RULE

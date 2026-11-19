@@ -36,6 +36,7 @@ def extend(target):
     value = target.get('group_chat_prompt', '')
     if image_ok:
         value = value.replace('\n当前生图未启用：不要主动生成聊天表情；用户明确要求作图时说明暂不可用，不能声称已经完成。', '')
+        value = value.replace('\n当前生图未启用：用户明确要求作图时说明暂不可用。', '')
         if 'Codex图片任务已经验证启用' not in value:
             value += '\nCodex图片任务已经验证启用：明确生图、改图调用 generate_image，普通作图高质量，表情包才使用300×300规格。'
     if '深入分析可调用 ask_codex' not in value:

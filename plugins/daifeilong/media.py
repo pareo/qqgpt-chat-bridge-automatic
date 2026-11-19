@@ -48,10 +48,8 @@ def reference_files(directory: Path, characters: dict, names: str) -> list[tuple
     return result
 
 
-def prepare_references(directory, characters, prompt, kind, names, originals=()):
+def prepare_references(directory, characters, prompt, names, originals=()):
     """Keep edit originals separate and fit character references in the attachment budget."""
-    if kind == 'casual_sticker' and not names.strip():
-        names = 'gpt'
     if names.strip().lower() == 'all':
         names = ','.join(characters)
     identifiers = list(dict.fromkeys(part.strip() for part in names.split(',') if part.strip()))
@@ -124,11 +122,11 @@ def generate(directory: Path, prompt: str, kind: str, names: str, source_images:
     image_config = config['images']
     if not image_config['enabled'] or not image_config['model']:
         raise ImageError('生图尚未启用，请配置生图模型和接口')
-    if kind not in ('image', 'sticker', 'casual_sticker'):
-        raise ImageError('图片类型必须为 image、sticker 或 casual_sticker')
+    if kind not in ('image', 'sticker'):
+        raise ImageError('图片类型必须为 image 或 sticker')
     if not prompt.strip() or len(prompt) > 16000:
         raise ImageError('图片提示词为空或过长')
-    prompt, refs = prepare_references(directory, characters, prompt, kind, names, source_images or ())
+    prompt, refs = prepare_references(directory, characters, prompt, names, source_images or ())
     if kind != 'image':
         prompt += '\n制作单张抽象搞笑的聊天反应表情，正方形构图，角色清楚可辨，避免细小文字。'
     base_url = (image_config['base_url'] or config['api']['base_url']).rstrip('/')

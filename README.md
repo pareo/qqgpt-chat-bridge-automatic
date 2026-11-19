@@ -2,7 +2,7 @@
 
 独立于旧版窗口桥接程序的新项目。QQ 消息通过 NapCat 的 OneBot WebSocket 接入 MaiBot，普通聊天通过 API 调用。当前新增隔离的 Codex ACP 后端处理搜索、深入分析和图片任务，QQ 收发始终走 NapCat，旧窗口后端已停用。参见[双后端配置与安全边界](docs/codex-backends.md)。
 
-仓库提供通用配置与三种模式示例。账号、群号、API 凭据、私人提示词、角色参考图与登录数据不随源码分发，请在 config/local/ 中配置。
+仓库提供通用配置与三种模式示例。账号、群号、API 凭据、私人提示词、角色参考图与登录数据均在本地配置。
 
 ## 快速开始
 
@@ -10,7 +10,9 @@
 
 Windows 在项目目录使用 `run.cmd`；Linux/macOS 使用 `sh run.sh`，命令相同。
 
-Windows 已完成配置后，启动 Docker Desktop，再双击 `run.cmd` 即可启动 MaiBot、NapCat 和已配置的 AI 后端，无需输入命令。窗口会保留启动结果或错误提示；启动成功后关闭窗口，服务仍在后台运行。原来的 `run.cmd start/stop/status` 等命令保持可用。
+Windows 完成首次配置后，双击 `run.cmd` 即可启动 MaiBot、NapCat 和已配置的 AI 后端。Docker Desktop 尚未启动时，脚本会先启动它并等待引擎就绪。窗口会保留启动结果和 QQ 登录状态。
+
+日常管理可双击 `重启服务.bat` 或 `停止服务.bat`。重启会使用当前已部署的配置，停止后也可双击重启恢复服务。
 
 ```powershell
 .\run.cmd init
@@ -22,8 +24,9 @@ Windows 已完成配置后，启动 Docker Desktop，再双击 `run.cmd` 即可�
 - `config/local/secrets.json`：`sub2api_api_key`；需要独立生图服务时填写 `image_api_key`。另外两项访问令牌会自动生成。
 - `config/local/modes.json`：三种模式的完整提示词。
 - `config/local/characters.json` 与 `config/local/assets/characters/`：角色资料与参考图。
+- `config/local/blocked_words.txt`：QQ 和 MaiBot 网页聊天的发言过滤词表，UTF-8，每行一个词组。
 
-`bot.listen_mode` 默认为 `allowlist`，只读取 `groups` 列出的群；改为 `all` 可开放该 QQ 账号的全部群，回复仍按来源聊天路由。示例配置只允许填写的群，私聊关闭；实际权限以运行中的适配器策略为准。
+`bot.listen_mode` 默认为 `allowlist`，只读取 `groups` 列出的群；改为 `all` 可开放该 QQ 账号的全部群，回复仍按来源聊天路由。示例配置只允许填写的群，私聊关闭。实际权限以运行中的适配器策略为准。
 
 `chat.artificial_typos` 默认关闭，避免内置模块为了模拟真人而改坏正确文字；`chat.typing_speed` 默认 0，去掉模拟打字等待。自然分气泡仍保留。
 
@@ -40,13 +43,13 @@ Windows 已完成配置后，启动 Docker Desktop，再双击 `run.cmd` 即可�
 
 若尚未填写 API Key，可先运行 `run.cmd setup` 查看 MaiBot 管理页面。此时 QQ 连接器自动停用，不会不停请求模型。Key 不需要发给开发者，也不要放进 Git。
 
-本机 sub2api 对宿主的地址是 `http://127.0.0.1:18080`，对容器的默认配置是 `http://host.docker.internal:18080/v1`。换服务器后按实际网络修改。请使用 api-check 验证自己的可用模型，并分别验证文字、识图和工具调用。Responses 的思考强度使用 `reasoning.effort`，Chat Completions 使用 `reasoning_effort`，项目会按客户端类型生成正确参数。
+sub2api 在示例配置中使用宿主地址 `http://127.0.0.1:18080`，从容器访问时使用 `http://host.docker.internal:18080/v1`。换服务器后按实际网络修改。请使用 `api-check` 验证自己的可用模型，并分别验证文字、识图和工具调用。Responses 的思考强度使用 `reasoning.effort`，Chat Completions 使用 `reasoning_effort`，项目会按客户端类型生成正确参数。
 
 ## 管理
 
 | 命令 | 用途 |
 |---|---|
-| `run.cmd start` | 检查配置后启动两项服务 |
+| `run.cmd start` | 按已部署的配置启动 MaiBot、NapCat 和已启用的 AI 后端 |
 | `run.cmd stop` | 停止，保留配置、QQ 登录与聊天数据 |
 | `run.cmd restart` | 重启服务，不重新问 AI、不重发消息 |
 | `run.cmd status` | 显示容器、MaiBot 内部 Bot 状态、QQ 连接及账号是否匹配 |
@@ -55,13 +58,15 @@ Windows 已完成配置后，启动 Docker Desktop，再双击 `run.cmd` 即可�
 | `run.cmd configure` | 将本地配置应用到运行文件并备份旧文件 |
 | `run.cmd test` | 运行离线测试，不向 QQ 或真实模型发送消息 |
 
-常用模型、人设、群白名单、聊天频率等也能在 MaiBot 原生 WebUI 修改。大肥龙扩展设置提供闲聊配图概率选项 0%、10%、30%、50%、80%、100%。`configure` 是明确的重新应用操作，会以 `config/local/` 覆盖本项目管理的设置；普通 `start/restart` 不会重新生成或覆盖 WebUI 调整。
+常用模型、人设、群白名单、聊天频率等也能在 MaiBot 原生 WebUI 修改。在「插件配置 → 大肥龙扩展 → 闲聊表情包」可选 0%、10%、30%、50%、80%、100% 的表情概率，并设置冷却时间。日常启动使用当前部署配置。发现本地配置有未应用的改动时，`start` 会提示并继续启动。需要把 `config/local/` 应用到运行配置时，执行 `configure`，它会覆盖本项目管理的面板设置。
 
 启动时会检查非关键的插件使用时长统计文件。若异常断电等情况导致文件内容损坏，先将原文件保存在同目录的 `plugin_usage.json.corrupt-*`，再重建统计，避免统计故障阻止全部插件加载。此恢复不处理聊天数据库、配置或 QQ 登录文件。
 
 Docker 健康检查和 `status` 也会核实已启用的 QQ 连接器、大肥龙扩展确实加载成功，不再仅依据主进程的 HTTP 端口判断健康；QQ 是否登录由单独的账号检查报告。
 
-群聊命令：`/模式` 查看，`/模式 大肥龙模式`、`/模式 正经模式`、`/模式 猫娘模式` 切换。任何群友可用，**当前切换作用于这个 Bot 的全部会话**。开放多个群之前应评估是否需要各群独立模式。
+群聊命令 `/模式` 查看当前模式，`/模式 大肥龙模式`、`/模式 正经模式`、`/模式 猫娘模式` 切换。任何群友可用，**当前切换作用于这个 Bot 的全部会话**。
+
+发言过滤默认关闭。在 MaiBot WebUI 的「大肥龙扩展 → QQ 和 WebUI 发言过滤」可打开。若由 `run.cmd configure` 管理配置，将 `config/local/project.json` 的 `moderation.enabled` 设为 `true`。词表保存后自动读取。命中时整条回复替换成固定提示。词表暂时无法读取时沿用最近一次有效词表，启动后尚未读到有效词表时发送审核不可用提示。
 
 ## 功能与当前边界
 
@@ -69,7 +74,9 @@ Docker 健康检查和 `status` 也会核实已启用的 QQ 连接器、大肥�
 
 生图单独配置 `images.enabled/model/base_url`。默认通过 `/v1/images/generations`，需要原图或角色参考图时通过 `/v1/images/edits`。sub2api 的账号、API 分组、版本和模型必须实际支持这些端点，**聊天成功不代表生图成功**。没有配置生图模型时明确报错，不假装已生成。
 
-普通作图保持高质量、保留用户主题；仅 `sticker/casual_sticker` 转成 300×300 PNG、96 DPI。只有 `casual_sticker` 检查概率和冷却；明确作图任务不受影响。GPT 娘优先的规则只用于随聊天生成的反应表情。不会恢复旧表情库或下载陌生来源图片。
+闲聊时通过 MaiBot 的 `reply.attach_emoji` 按情绪从已注册的表情包中选一张。明确要求画图时使用生图工具，普通作图保持高质量，明确制作新表情包时输出 300×300 PNG、96 DPI。
+
+在 QQ 消息上贴表情时，大肥龙可按名称批量查号，再逐个贴到目标消息上。参见 [QQ 贴表情编号大全](docs/qq-reaction-ids.md)。
 
 图片生成超时可能已在上游执行，所以不会盲目重复提交。生成结果先写入 `data/core/plugins/local.daifeilong/generated/`，再按来源聊天发送；未确认发送不会重生成或自动整条重发。
 

@@ -15,7 +15,7 @@ from PIL import Image
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'plugins'))
 from daifeilong import desktop
-from daifeilong.plugin import DaifeilongPlugin, PERSONA_VOICE
+from daifeilong.plugin import CASUAL_REACTION_POLICY, DaifeilongPlugin, PERSONA_VOICE
 
 
 def picture():
@@ -135,9 +135,38 @@ class HybridRoutingTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(message_id=message_id):
                 result = await self.plugin.supply_current_tool_evidence(
                     session_id='origin', reply_message_id=message_id, extra_prompt='回答简短一些',
+                    reply_tool_args={'msg_id': message_id}, model_name='reply-model',
                 )
                 self.assertEqual(result['modified_kwargs']['extra_prompt'], '回答简短一些\n\n' + PERSONA_VOICE)
+                self.assertEqual(result['modified_kwargs']['reply_tool_args'], {'msg_id': message_id})
+                self.assertEqual(result['modified_kwargs']['model_name'], 'reply-model')
         self.plugin.ctx.llm.generate.assert_not_awaited()
+
+    async def test_reaction_planner_hint_applies_only_when_tool_and_probability_are_available(self):
+        from src.llm_models.payload_content.context_item import CONTEXT_ITEM_SCHEMA_VERSION, ContextItemBuilder, RoleType
+        from src.plugin_runtime.hook_payloads import deserialize_prompt_items, serialize_prompt_items
+
+        original = [ContextItemBuilder().set_role(RoleType.System).add_text_content('原提示').build()]
+        items = serialize_prompt_items(original)
+        definitions = [{'type': 'function', 'function': {'name': 'reply', 'parameters': {'properties': {'attach_emoji': {}}}}}]
+        result = await self.plugin.capture_current_tool_evidence('origin', items, definitions, item_schema_version=CONTEXT_ITEM_SCHEMA_VERSION)
+        payload = result['modified_kwargs']
+        rewritten = payload['items']
+        self.assertIn(CASUAL_REACTION_POLICY, rewritten[0]['parts'][-1]['text'])
+        self.assertEqual(payload['tool_definitions'], definitions)
+        self.assertEqual(len(deserialize_prompt_items(rewritten, item_schema_version=payload['item_schema_version'])), 1)
+        self.assertEqual(await self.plugin.capture_current_tool_evidence('origin', rewritten, definitions), {'action': 'continue'})
+        self.assertEqual(await self.plugin.capture_current_tool_evidence('origin', items, []), {'action': 'continue'})
+        self.plugin.set_plugin_config({'plugin': {'config_version': '1.0.0'}, 'reactions': {'probability': 0}})
+        self.assertEqual(await self.plugin.capture_current_tool_evidence('origin', items, definitions), {'action': 'continue'})
+
+    async def test_reaction_probability_dropdown_and_legacy_float(self):
+        field = self.plugin.get_webui_config_schema()['sections']['reactions']['fields']['probability']
+        self.assertEqual(field['choices'], [0, 0.1, 0.3, 0.5, 0.8, 1])
+        self.assertEqual(field['i18n']['zh-CN']['choice:0.8'], '80%')
+        for value, expected in (('0.3', 0.3), (0.37, 0.37), ('1', 1)):
+            self.plugin.set_plugin_config({'plugin': {'config_version': '1.0.0'}, 'reactions': {'probability': value}})
+            self.assertEqual(self.plugin.config.reactions.probability, expected)
 
     async def test_search_returns_data_to_original_ai_without_direct_qq_send(self):
         settings = ({'desktop_worker': {'enabled': True}}, {}, {})
@@ -216,12 +245,34 @@ class HybridRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json.loads(args[0][1]['content']), {'绘图请求': '把全员加入这张画', '作图备注': raw_caption})
         self.plugin.ctx.send.text.assert_awaited_once_with('喵，这幅画拿去挂墙上！', 'origin')
 
-    async def test_incidental_sticker_leaves_text_to_normal_reply(self):
-        result = {'id': 'abc123', 'text': '工具原文', 'artifacts': [{'id': 'pic', 'kind': 'image', 'name': 'a.png', 'raw': picture()}]}
-        outcome = await self.plugin.deliver_desktop_images(result, 'casual_sticker', 'group-b')
-        self.assertTrue(outcome['sent'])
-        self.plugin.ctx.llm.generate.assert_not_awaited()
-        self.plugin.ctx.send.text.assert_not_awaited()
+    async def test_library_sticker_probability_and_cooldown_preserve_text_reply(self):
+        from src.llm_models.payload_content.context_item import CONTEXT_ITEM_SCHEMA_VERSION, ContextItemMeta, ContextToolCall, FunctionCallItem
+        from src.llm_models.payload_content.context_protocol import ContextProtocolMode
+        from src.plugin_runtime.hook_payloads import deserialize_prompt_items, serialize_prompt_items
+
+        call = ContextToolCall.create(call_id='reply-1', func_name='reply', args={'msg_id': '42', 'attach_emoji': '忍笑'})
+        original = [FunctionCallItem(ContextItemMeta.create(logical_turn_id='turn-1'), call)]
+        reply = serialize_prompt_items(original)[0]
+        with patch('daifeilong.plugin.random.random', return_value=0.9):
+            skipped = await self.plugin.limit_library_sticker('group-a', [reply])
+        filtered = deserialize_prompt_items(
+            skipped['modified_kwargs']['output_items'], item_schema_version=CONTEXT_ITEM_SCHEMA_VERSION,
+            mode=ContextProtocolMode.MODEL_OUTPUT, original_items=original,
+        )
+        self.assertEqual(filtered[0].tool_call.materialize_args(), {'msg_id': '42'})
+        with patch('daifeilong.plugin.random.random', return_value=0.2):
+            self.assertEqual(await self.plugin.limit_library_sticker('group-a', [reply]), {'action': 'continue'})
+            await self.plugin.remember_sent_sticker({'session_id': 'group-a', 'raw_message': [{'type': 'emoji'}]}, sent=False)
+            self.assertEqual(await self.plugin.limit_library_sticker('group-a', [reply]), {'action': 'continue'})
+            await self.plugin.remember_sent_sticker({'session_id': 'group-a', 'raw_message': [{'type': 'emoji'}]}, sent=True)
+            cooled = await self.plugin.limit_library_sticker('group-a', [reply])
+            self.assertEqual(cooled['modified_kwargs']['output_items'][0]['tool_call']['args'], {'msg_id': '42'})
+            self.assertEqual(await self.plugin.limit_library_sticker('group-b', [reply]), {'action': 'continue'})
+
+    async def test_library_sticker_rejects_context_only_reference(self):
+        reply = {'item_type': 'FunctionCallItem', 'tool_call': {'func_name': 'reply', 'args': {'msg_id': '42', 'attach_emoji': {'msg_id': '43'}}}}
+        result = await self.plugin.limit_library_sticker('group-a', [reply])
+        self.assertEqual(result['modified_kwargs']['output_items'][0]['tool_call']['args'], {'msg_id': '42'})
 
     async def test_explicit_desktop_image_ignores_disabled_api_and_casual_probability(self):
         config = {'images': {'backend': 'desktop', 'enabled': False}, 'desktop_worker': {'enabled': True}}

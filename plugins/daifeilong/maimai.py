@@ -30,6 +30,10 @@ class MaimaiError(RuntimeError):
     pass
 
 
+class SongLookupMiss(MaimaiError):
+    """The command can continue using public web search."""
+
+
 def load_settings(directory: Path):
     try:
         config = json.loads((directory / 'project.json').read_text(encoding='utf-8-sig'))
@@ -156,10 +160,10 @@ class SongCatalog:
                             self.aliases_by_id.setdefault(int(key) % 10000, set()).update(normalize(a) for a in item['Alias'])
                 entries = [(song, {normalize(song['title']), *self.aliases_by_id.get(int(song['id']) % 10000, ())})
                            for song in songs if str(song.get('id', '')).isdigit()]
-            except MaimaiError:
+            except MaimaiError as exc:
                 if self.entries:
                     return self.entries
-                raise
+                raise SongLookupMiss('水鱼曲库暂时连不上。') from exc
             self.entries = entries
             self.fetched_at = time.monotonic()
             return self.entries
@@ -188,7 +192,7 @@ class SongCatalog:
         if not matches:
             matches = [song for song, names in entries if any(term in name for name in names)]
         if not matches:
-            return '没找到这首歌，换个别名、全名或曲目 ID 试试。'
+            raise SongLookupMiss('水鱼曲库和别名里没匹配到这首歌。')
         if len({normalize(s['title']) for s in matches}) > 1 or len(matches) > 3:
             options = '\n'.join(f"{s['id']} · {s['title']} ({s['type']})" for s in matches[:6])
             return f'找到 {len(matches)} 首，请用曲目 ID 再查一次。\n{options}'

@@ -202,13 +202,13 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         self.plugin.ctx.personality.switch.assert_awaited_once_with('正经模式')
         self.plugin.ctx.send.text.assert_awaited_once_with('已切换到正经模式', 'origin')
 
-    async def test_disabled_casual_images_do_not_report_errors_to_group(self):
-        config, credentials = configured()
-        config['images']['enabled'] = False
-        with patch('daifeilong.plugin.read_settings', return_value=(config, credentials, {})), patch('daifeilong.plugin.generate') as generate:
+    async def test_legacy_casual_image_never_generates_or_sends(self):
+        with patch('daifeilong.plugin.read_settings') as settings, patch('daifeilong.plugin.generate') as generate:
             result = await self.plugin.generate_image('笑', kind='casual_sticker', stream_id='origin')
         self.assertTrue(result['skipped'])
+        settings.assert_not_called()
         generate.assert_not_called()
+        self.plugin.ctx.send.image.assert_not_awaited()
         self.plugin.ctx.send.text.assert_not_awaited()
 
     async def test_explicit_image_bypasses_casual_probability(self):
@@ -219,15 +219,6 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         generate.assert_called_once()
         self.assertTrue(result['sent'])
         self.assertEqual(self.plugin.ctx.send.image.call_args.args[1], 'origin')
-
-    async def test_zero_probability_only_skips_casual_image(self):
-        config, credentials = configured()
-        config['images']['casual_probability'] = 0
-        self.plugin.set_plugin_config({'plugin': {'config_version': '1.0.0'}, 'reactions': {'probability': 0}})
-        with patch('daifeilong.plugin.read_settings', return_value=(config, credentials, {})), patch('daifeilong.plugin.generate') as generate:
-            result = await self.plugin.generate_image('笑', kind='casual_sticker', stream_id='origin')
-        generate.assert_not_called()
-        self.assertTrue(result['skipped'])
 
     async def test_failed_delivery_does_not_repeat_generation(self):
         config, credentials = configured()
