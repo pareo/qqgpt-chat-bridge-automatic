@@ -17,8 +17,16 @@ if ($Action.StartsWith('worker-')) {
 }
 $Docker = Get-Command docker -ErrorAction SilentlyContinue
 if (-not $Docker) {
-    $DockerPath = Join-Path $env:LOCALAPPDATA 'Programs\DockerDesktop\resources\bin\docker.exe'
-    if (Test-Path -LiteralPath $DockerPath) { $Docker = Get-Item -LiteralPath $DockerPath }
+    $DockerPaths = @(
+        (Join-Path $env:ProgramFiles 'Docker\Docker\resources\bin\docker.exe'),
+        (Join-Path $env:LOCALAPPDATA 'Programs\DockerDesktop\resources\bin\docker.exe')
+    )
+    foreach ($DockerPath in $DockerPaths) {
+        if (Test-Path -LiteralPath $DockerPath) {
+            $Docker = Get-Item -LiteralPath $DockerPath
+            break
+        }
+    }
 }
 if (-not $Docker) { throw 'Docker Desktop is required. Install it, enable the Linux engine, and retry.' }
 $DockerExe = if ($Docker.Source) { $Docker.Source } else { $Docker.FullName }
@@ -35,11 +43,42 @@ function Invoke-Compose([string[]]$ComposeArgs) {
     if (-not (Test-Path -LiteralPath 'config/generated/deployment.env')) { throw 'Run run.cmd init first.' }
     Invoke-Docker (@('compose','--env-file','config/generated/deployment.env') + $ComposeArgs)
 }
-function Invoke-EnabledAgent([string]$AgentAction) {
+function Wait-ProjectBot {
+    $Compose = @('compose','--env-file','config/generated/deployment.env','exec','-T','core','python')
+    $Deadline = (Get-Date).AddSeconds(90)
+    $StartRequested = $false
+    do {
+        $HostStatus = & $DockerExe @Compose -m src.cli.tool host status -d /MaiMBot 2>$null
+        if ($LASTEXITCODE -eq 0 -and $HostStatus) {
+            $Bot = $HostStatus | ConvertFrom-Json
+            if ($Bot.directory -eq '/MaiMBot' -and $Bot.status -eq 'stopped' -and $Bot.bot_id -and -not $StartRequested) {
+                Invoke-Docker ($Compose + @('-m','src.cli.tool','host','start','-d','/MaiMBot','--bot-id',$Bot.bot_id)) | Out-Null
+                $StartRequested = $true
+            }
+            if ($Bot.status -eq 'running') {
+                & $DockerExe @Compose /project/scripts/runtime_status.py 2>$null | Out-Null
+                if ($LASTEXITCODE -eq 0) { return }
+            }
+            if ($Bot.status -in ('failed','crash_loop')) {
+                throw 'MaiBot failed to start. Run run.cmd logs to see the startup log.'
+            }
+        }
+        Start-Sleep -Seconds 2
+    } while ((Get-Date) -lt $Deadline)
+    throw 'MaiBot was not ready after 90 seconds. Run run.cmd status or run.cmd logs for details.'
+}
+function Start-Project {
+    Invoke-Tool 'check-start'
     $LocalSettings = Get-Content -LiteralPath 'config/local/project.json' -Raw -Encoding UTF8 | ConvertFrom-Json
+    $ComposeFiles = @('-f','compose.yaml')
+    $Services = @('core','napcat')
     if ($LocalSettings.agent_worker.enabled) {
-        & (Join-Path $PSScriptRoot 'codex-worker.ps1') -Action $AgentAction
+        $ComposeFiles += @('-f','compose.codex.yaml')
+        $Services += 'codex-worker'
     }
+    Invoke-Compose ($ComposeFiles + @('up','-d') + $Services)
+    Wait-ProjectBot
+    Invoke-Compose @('exec','-T','core','python','/project/scripts/api_smoke.py','qq-status')
 }
 if ($Action -eq 'help') {
     Write-Host 'Daifeilong / MaiBot + NapCat'
@@ -47,7 +86,7 @@ if ($Action -eq 'help') {
     Write-Host 'run.cmd configure  Apply local config to MaiBot and NapCat'
     Write-Host 'run.cmd doctor     Check Docker, configuration, and API credentials'
     Write-Host 'run.cmd setup      Start the management UI without enabling QQ chat'
-    Write-Host 'run.cmd start      Validate config and start services'
+    Write-Host 'run.cmd start      Start services using the deployed configuration'
     Write-Host 'run.cmd stop       Stop services and preserve all data'
     Write-Host 'run.cmd restart    Restart services'
     Write-Host 'run.cmd status     Show service status'
@@ -59,18 +98,37 @@ if ($Action -eq 'help') {
     Write-Host 'run.cmd worker-build/start/stop/status/reset/test  Manage optional Windows ChatGPT task worker'
     exit 0
 }
+$EngineType = & $DockerExe info --format '{{.OSType}}' 2>$null
+if ($LASTEXITCODE -ne 0 -and $Action -eq 'start') {
+    Write-Host 'Starting Docker Desktop. Waiting for the Linux engine...'
+    Invoke-Docker @('desktop','start','--timeout','120')
+    $EngineDeadline = (Get-Date).AddSeconds(30)
+    do {
+        $EngineType = & $DockerExe info --format '{{.OSType}}' 2>$null
+        if ($LASTEXITCODE -eq 0) { break }
+        Start-Sleep -Seconds 2
+    } while ((Get-Date) -lt $EngineDeadline)
+    if ($LASTEXITCODE -ne 0) { throw 'Docker Desktop started, but its engine is not ready. Check Docker Desktop and retry.' }
+}
 Invoke-Docker @('compose','version')
 Invoke-Docker @('info','--format','{{.ServerVersion}}')
-$EngineType = & $DockerExe info --format '{{.OSType}}'
 if ($EngineType -ne 'linux') { throw 'Switch Docker Desktop to Linux containers before starting this project.' }
 switch ($Action) {
     'init' { Invoke-Tool 'init' }
     'configure' { Invoke-Tool 'configure' }
     'doctor' { Invoke-Tool 'check' }
     'setup' { Invoke-Compose @('up','-d','--build','core') }
-    'start' { Invoke-Tool 'check'; Invoke-EnabledAgent 'start'; Invoke-Compose @('up','-d','--build') }
-    'stop' { Invoke-Compose @('stop'); Invoke-EnabledAgent 'stop' }
-    'restart' { Invoke-Tool 'check'; Invoke-EnabledAgent 'start'; Invoke-Compose @('restart') }
+    'start' { Start-Project }
+    { $_ -in ('stop', 'restart') } {
+        $ComposeFiles = @('-f', 'compose.yaml')
+        if (Test-Path -LiteralPath 'compose.codex.yaml') {
+            $ComposeFiles += @('-f', 'compose.codex.yaml')
+        }
+        if ($Action -eq 'restart' -and -not (Invoke-Compose ($ComposeFiles + @('ps', '-a', '--services', '--orphans=false')))) {
+            throw 'No deployed services found. Double-click run.cmd to start the project first.'
+        }
+        Invoke-Compose ($ComposeFiles + @($Action))
+    }
     'status' { Invoke-Compose @('ps','-a'); Invoke-Compose @('exec','-T','core','python','-m','src.cli.tool','host','status','-d','/MaiMBot'); Invoke-Compose @('exec','-T','core','python','/project/scripts/runtime_status.py'); Invoke-Compose @('exec','-T','core','python','/project/scripts/api_smoke.py','qq-status') }
     'logs' { Invoke-Compose (@('logs','--tail','120','-f') + $ExtraArgs) }
     'api-check' { Invoke-Tool 'api-check' }

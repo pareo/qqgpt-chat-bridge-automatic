@@ -16,8 +16,9 @@ class ReplyEvidence:
         for item in items:
             if item.get('item_type') == 'UserMessageItem':
                 text = ''.join(p.get('text', '') for p in item.get('parts', []) if p.get('type') == 'text')
-                match = re.match(r'^\s*<message\s+msg_id="([^"]+)"', text)
-                if match:
+                match = re.match(r'^\s*<message\s+msg_id="([^"]+)"([^>\r\n]*)>', text)
+                # MaiBot also serializes QQ echoes of our own replies as UserMessageItem.
+                if match and not re.search(r'\sis_self_message="true"(?:\s|$)', match.group(2)):
                     anchor, results = match.group(1), []
             elif item.get('item_type') == 'FunctionCallOutputItem' and item.get('success', True) and item.get('tool_name') in ('web_search', 'ask_codex'):
                 output = item.get('output', '')

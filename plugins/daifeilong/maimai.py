@@ -22,11 +22,16 @@ READ = 'prober.records.read'
 WRITE = 'prober.records.write'
 BIND_HELP = '请在运行大肥龙的电脑执行 scripts/maimai.ps1 的 bind 操作，按水鱼页面完成一次授权。'
 LEVELS = ('绿', '黄', '红', '紫', '白')
+DIFFICULTY_NAMES = ('basic', 'advanced', 'expert', 'master', 're:master')
 CHART_TYPES = {'SD': '标准', 'DX': 'DX', 'UTAGE': '宴会场'}
 
 
 class MaimaiError(RuntimeError):
     pass
+
+
+class SongLookupMiss(MaimaiError):
+    """The command can continue using public web search."""
 
 
 def load_settings(directory: Path):
@@ -155,39 +160,48 @@ class SongCatalog:
                             self.aliases_by_id.setdefault(int(key) % 10000, set()).update(normalize(a) for a in item['Alias'])
                 entries = [(song, {normalize(song['title']), *self.aliases_by_id.get(int(song['id']) % 10000, ())})
                            for song in songs if str(song.get('id', '')).isdigit()]
-            except MaimaiError:
+            except MaimaiError as exc:
                 if self.entries:
                     return self.entries
-                raise
+                raise SongLookupMiss('水鱼曲库暂时连不上。') from exc
             self.entries = entries
             self.fetched_at = time.monotonic()
             return self.entries
 
     async def describe(self, client, query):
-        query, _, difficulty = query.replace('｜', '|').partition('|')
-        term = normalize(query)
-        level = normalize(difficulty)
+        full_term, separator, level = normalize(query).partition('|')
+        term = full_term.strip()
+        level = level.strip()
+        if not separator:
+            title, space, suffix = term.rpartition(' ')
+            if space and (suffix in LEVELS or suffix in DIFFICULTY_NAMES
+                          or re.fullmatch(r'[0-9]{1,2}(?:\+|\.[0-9]+)?', suffix)):
+                term, level = title, suffix
         if not term or len(term) > 100:
-            raise MaimaiError('用法 /查歌 曲名或别名，可追加 | 紫 或 | 14+。')
+            raise MaimaiError('用法 /查歌 曲名、别名或数字 ID。可用空格追加难度，例如 /查歌 水神2 紫。')
         entries = await self.get(client)
-        if term.isascii() and term.isdecimal():
+        matches = []
+        if not separator and level and len(full_term) <= 100:
+            matches = [song for song, names in entries if full_term in names]
+            if matches:
+                level = ''
+        if not matches and term.isascii() and term.isdecimal():
             matches = [song for song, _ in entries if str(song['id']) == term]
-        else:
+        elif not matches:
             matches = [song for song, names in entries if term in names]
         if not matches:
             matches = [song for song, names in entries if any(term in name for name in names)]
         if not matches:
-            return '没找到这首歌，换个别名、全名或曲目 ID 试试。'
+            raise SongLookupMiss('水鱼曲库和别名里没匹配到这首歌。')
         if len({normalize(s['title']) for s in matches}) > 1 or len(matches) > 3:
             options = '\n'.join(f"{s['id']} · {s['title']} ({s['type']})" for s in matches[:6])
             return f'找到 {len(matches)} 首，请用曲目 ID 再查一次。\n{options}'
         chart_lines = []
-        difficulty_names = ('basic', 'advanced', 'expert', 'master', 're:master')
         for song in matches:
             kind = CHART_TYPES.get(song['type'], song['type'])
             for index, (grade, constant) in enumerate(zip(song['level'], song['ds'])):
                 color = LEVELS[index] if index < len(LEVELS) and int(song['id']) < 100000 else ''
-                name = difficulty_names[index] if color else ''
+                name = DIFFICULTY_NAMES[index] if color else ''
                 if level and level not in {color, normalize(grade), name, normalize(constant)}:
                     continue
                 chart_lines.append(f'{kind} {color}{grade}（定数 {constant}）')

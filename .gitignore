@@ -5,6 +5,8 @@
 /vendor/
 /upstream/
 /plugins/**/config.toml
+/plugins/daifeilong/config_back/*
+!/plugins/daifeilong/config_back/.gitkeep
 /.env
 __pycache__/
 *.pyc

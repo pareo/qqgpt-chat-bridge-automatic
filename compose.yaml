@@ -26,7 +26,9 @@ services:
       - ./vendor/qq-connector:/MaiMBot/plugins/qq-connector:ro
       - ./plugins/daifeilong:/MaiMBot/plugins/daifeilong:ro
       - ./config/generated/connector.toml:/MaiMBot/plugins/qq-connector/config.toml
+      - ./config/generated/connector-config-backups:/MaiMBot/plugins/qq-connector/config_back
       - ./config/generated/plugin.toml:/MaiMBot/plugins/daifeilong/config.toml
+      - ./config/generated/daifeilong-config-backups:/MaiMBot/plugins/daifeilong/config_back
       - ./data/core:/MaiMBot/data
       - ./config/generated/host:/MaiMBot/host
       - ./data/bots:/MaiMBot/bots

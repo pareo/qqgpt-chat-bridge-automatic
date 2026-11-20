@@ -20,7 +20,7 @@ case "$action" in
   configure|api-check) tool "$action" "$@";;
   doctor) tool check;;
   setup) docker compose --env-file config/generated/deployment.env up -d --build core;;
-  start) tool check; docker compose --env-file config/generated/deployment.env up -d --build;;
+  start) tool check-start; docker compose --env-file config/generated/deployment.env up -d;;
   stop) docker compose --env-file config/generated/deployment.env stop;;
   restart) docker compose --env-file config/generated/deployment.env restart;;
   status) docker compose --env-file config/generated/deployment.env ps -a; docker compose --env-file config/generated/deployment.env exec -T core python -m src.cli.tool host status -d /MaiMBot; docker compose --env-file config/generated/deployment.env exec -T core python /project/scripts/runtime_status.py; docker compose --env-file config/generated/deployment.env exec -T core python /project/scripts/api_smoke.py qq-status;;

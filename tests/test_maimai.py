@@ -14,6 +14,53 @@ from daifeilong.plugin import DaifeilongPlugin
 
 
 class MaimaiTests(unittest.IsolatedAsyncioTestCase):
+    async def test_song_fallback_notifies_then_replies_in_origin(self):
+        for failure, notice in (
+            (False, '水鱼曲库和别名里没匹配到这首歌。'),
+            (True, '水鱼曲库暂时连不上。'),
+        ):
+            with self.subTest(failure=failure):
+                plugin = DaifeilongPlugin()
+                send = AsyncMock(return_value=True)
+                summarize = AsyncMock(return_value={'success': True, 'response': '查到候选曲目了。'})
+                plugin._set_context(SimpleNamespace(
+                    send=SimpleNamespace(text=send),
+                    personality=SimpleNamespace(get_current=AsyncMock(return_value={'personality': '认真核实'})),
+                    llm=SimpleNamespace(generate=summarize),
+                    logger=SimpleNamespace(info=lambda *_: None, error=lambda *_: None),
+                ))
+                await plugin.on_load()
+                self.addAsyncCleanup(plugin.on_unload)
+
+                def respond(request):
+                    if request.url.host == 'www.yuzuchan.moe':
+                        return httpx.Response(200, json={'content': []})
+                    if failure:
+                        raise httpx.ConnectError('offline', request=request)
+                    return httpx.Response(200, json=[{'id': '42', 'title': 'Other song'}])
+
+                async def search(prompt, *, stream_id):
+                    send.assert_awaited_once_with(notice + ' 我去网上查一下。', 'origin')
+                    self.assertIn('三百绝赞 紫', prompt)
+                    self.assertEqual(stream_id, 'origin')
+                    return {'success': True, 'text': '可信的检索资料'}
+
+                client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+                client_patch = patch('daifeilong.plugin.httpx.AsyncClient', return_value=client)
+                settings_patch = patch('daifeilong.maimai.load_settings', return_value=(None, '', ''))
+                with client_patch, settings_patch, patch.object(plugin, 'web_search', side_effect=search) as web_search:
+                    result = await plugin.maimai_command(
+                        stream_id='origin', platform='qq',
+                        matched_groups={'song_search': '查歌', 'query': '三百绝赞 紫'},
+                    )
+                    self.assertTrue(result)
+                    self.assertEqual(send.await_count, 1)
+                    await next(iter(plugin.maimai_search_tasks))
+                    web_search.assert_awaited_once()
+                send.assert_awaited_with('查到候选曲目了。', 'origin')
+                messages = summarize.await_args.args[0]
+                self.assertIn('可信的检索资料', messages[1]['content'])
+
     async def test_alias_lookup_keeps_standard_and_dx_separate_and_caches_catalog(self):
         routes = []
 
@@ -21,18 +68,25 @@ class MaimaiTests(unittest.IsolatedAsyncioTestCase):
             routes.append(request.url.path)
             self.assertNotIn('Authorization', request.headers)
             if request.url.host == 'www.yuzuchan.moe':
-                return httpx.Response(200, json={'content': [{'SongID': 42, 'Alias': ['别名']}]})
+                return httpx.Response(200, json={'content': [{'SongID': 42, 'Alias': ['水神2']}]})
             return httpx.Response(200, json=[
                 {'id': '42', 'title': 'Test Song', 'type': 'SD', 'level': ['3', '6', '10', '14'], 'ds': [3, 6, 10, 14.1]},
                 {'id': '10042', 'title': 'Test Song', 'type': 'DX', 'level': ['4', '7', '11', '14+'], 'ds': [4, 7, 11, 14.7]},
+                {'id': '43', 'title': 'Test Song 2', 'type': 'SD', 'level': ['3', '6', '10', '14'], 'ds': [3, 6, 10, 14.1]},
             ])
 
         async with httpx.AsyncClient(base_url=maimai.BASE, transport=httpx.MockTransport(respond)) as client:
             catalog = maimai.SongCatalog()
-            both = await catalog.describe(client, '别名｜紫')
-            one = await catalog.describe(client, '10042 | 14+')
+            both = await catalog.describe(client, '水神2　紫')
+            one = await catalog.describe(client, '10042 14+')
+            self.assertEqual(both, await catalog.describe(client, '水神2｜紫'))
+            self.assertIn('DX 绿4（定数 4）', await catalog.describe(client, '10042'))
+            self.assertIn('Test Song 2 · ID 43', await catalog.describe(client, 'Test Song 2'))
+            self.assertIn('DX 紫14+（定数 14.7）', await catalog.describe(client, 'Test Song MASTER'))
         self.assertIn('标准 紫14（定数 14.1）', both)
         self.assertIn('DX 紫14+（定数 14.7）', both)
+        self.assertNotIn('绿', both)
+        self.assertIn('DX 紫14+（定数 14.7）', one)
         self.assertNotIn('标准', one)
         self.assertEqual(len(routes), 2)
 
@@ -66,7 +120,8 @@ class MaimaiTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(pattern.search('/更新'))
         self.assertIsNotNone(pattern.search('/查分帮助'))
         self.assertEqual(pattern.search('/HELP').group('action').lower(), 'help')
-        self.assertEqual(pattern.search('/查歌 水神 | 紫').group('query'), '水神 | 紫')
+        self.assertEqual(pattern.search('/查歌 10042').group('query'), '10042')
+        self.assertEqual(pattern.search('/查歌 水神2 紫').group('query'), '水神2 紫')
         self.assertIsNone(pattern.search('/舞萌 B50'))
         self.assertIsNone(pattern.search('/B50 other-player'))
         matched_groups = pattern.search('/B50').groupdict()
@@ -89,8 +144,11 @@ class MaimaiTests(unittest.IsolatedAsyncioTestCase):
         unexpected_client.assert_not_called()
         help_text, help_origin = send.text.await_args.args
         self.assertEqual(help_origin, 'origin')
-        for usage in ('/绑定', '/B50', '/查歌', '/更新', '/模式'):
+        for usage in ('/绑定', '/B50', '/查歌 <曲名、别名或数字 ID> [难度]', '水神2 紫', '10042', '/更新', '/模式', '/help',
+                      '附图提问', '文本文件', '联网查', '深入分析', '生图', '改图', '表情包', '表格转图片'):
             self.assertIn(usage, help_text)
+        self.assertEqual(help_text.count('/查歌'), 1)
+        self.assertEqual(help_text.count('/模式'), 1)
 
     async def test_update_posts_html_once_and_reports_unknown_if_request_is_lost(self):
         paths = []
