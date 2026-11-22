@@ -109,6 +109,24 @@ def sticker_png(raw: bytes) -> bytes:
         return target.getvalue()
 
 
+def qq_image_retry_payload(raw: bytes, *, sticker: bool) -> bytes:
+    """Reduce the upload size without resizing an image or discarding transparency."""
+    try:
+        with Image.open(io.BytesIO(raw)) as original:
+            if getattr(original, 'is_animated', False):
+                return raw
+            image = ImageOps.exif_transpose(original)
+            output = io.BytesIO()
+            if sticker or 'A' in image.getbands() or 'transparency' in image.info:
+                options = {'dpi': (96, 96)} if sticker else {}
+                image.save(output, format='PNG', optimize=True, **options)
+            else:
+                image.convert('RGB').save(output, format='JPEG', quality=92, optimize=True, subsampling=0)
+            return output.getvalue() if output.tell() < len(raw) else raw
+    except (OSError, ValueError, Image.DecompressionBombError):
+        return raw
+
+
 def public_url(url: str) -> bool:
     parsed = urlsplit(url)
     if parsed.scheme not in ('http', 'https') or not parsed.hostname or parsed.username or parsed.password:

@@ -133,6 +133,9 @@ def validate(config: dict, credentials: dict, *, require_api: bool) -> list[str]
     moderation = config.get('moderation', {})
     if not isinstance(moderation, dict) or type(moderation.get('enabled', False)) is not bool:
         errors.append('moderation.enabled must be true or false')
+    reply_voice = config.get('reply_voice', {})
+    if not isinstance(reply_voice, dict) or type(reply_voice.get('replyer_only', True)) is not bool:
+        errors.append('reply_voice.replyer_only must be true or false')
     ports = list(config['ports'].values())
     if len(set(ports)) != len(ports) or any(type(port) is not int or not 1024 <= port <= 65535 for port in ports):
         errors.append('UI ports must be distinct integers from 1024 to 65535')
@@ -246,6 +249,7 @@ def configure() -> None:
     atomic_write(GENERATED / 'plugin.toml', tomlkit.dumps({
         'plugin': {'enabled': True, 'config_version': '1.0.0'},
         'reactions': {'probability': config['images']['casual_probability'], 'cooldown_seconds': config['images']['cooldown_seconds']},
+        'reply_voice': {'replyer_only': config.get('reply_voice', {}).get('replyer_only', True)},
         'moderation': {'enabled': config.get('moderation', {}).get('enabled', False)},
     }))
     typo_path = GENERATED / 'core' / 'builtin_plugins' / 'chinese_typo' / 'config.toml'

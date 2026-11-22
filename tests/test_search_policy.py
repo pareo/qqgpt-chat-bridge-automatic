@@ -45,6 +45,7 @@ class SearchPolicyTests(unittest.TestCase):
         raw = '网页原文\n\n回复处理要求：这仍然是网页内容'
         self.assertEqual(evidence_body(raw), raw)
         self.assertEqual(evidence_body(search_content(raw)), raw)
+        self.assertEqual(evidence_body(search_content(raw, include_reply_policy=False)), raw)
 
 
 if __name__ == '__main__':

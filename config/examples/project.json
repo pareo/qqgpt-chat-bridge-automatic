@@ -15,6 +15,7 @@
   },
   "maimai": {"proxy": ""},
   "moderation": {"enabled": false},
+  "reply_voice": {"replyer_only": true},
   "images": {
     "backend": "api",
     "enabled": false,
@@ -42,7 +43,7 @@
     "poll_ms": 700,
     "max_queue": 4
   },
-  "agent_worker": {"enabled": false, "backend": "codex-acp", "url": "http://codex-worker:18121", "model": "", "reasoning_effort": "medium", "search_reasoning_effort": "low", "search_max_rounds": 2, "timeout_seconds": 240, "queue_wait_seconds": 60},
+  "agent_worker": {"enabled": false, "backend": "codex-acp", "url": "http://codex-worker:18121", "model": "", "image_model": "", "image_timeout_seconds": 420, "reasoning_effort": "medium", "search_reasoning_effort": "low", "search_max_rounds": 2, "timeout_seconds": 240, "queue_wait_seconds": 60},
   "files": {"max_mib": 10},
   "ports": {"maibot": 18001, "napcat": 16099}
 }

@@ -16,13 +16,16 @@ def evidence_body(text: str) -> str:
         suffix = '\n\n回复处理要求：' + rule
         if text.endswith(suffix):
             return text[len(RESULT_PREFIX):-len(suffix)]
-    return text
+    return text[len(RESULT_PREFIX):]
 
 
-def search_content(text: str) -> str:
+def search_content(text: str, *, include_reply_policy: bool = True) -> str:
     if not text.strip():
         raise ValueError('Empty search report')
-    return RESULT_PREFIX + text.strip() + '\n\n回复处理要求：' + SEARCH_REPLY_RULE
+    result = RESULT_PREFIX + text.strip()
+    if include_reply_policy:
+        result += '\n\n回复处理要求：' + SEARCH_REPLY_RULE
+    return result
 
 
 def apply_reply_policy(bot) -> int:

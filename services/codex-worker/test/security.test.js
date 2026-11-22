@@ -40,25 +40,84 @@ test('search has a bounded retrieval brief and configurable effort',()=>{
  assert.throws(()=>searchOptions({search_reasoning_effort:'bogus'}));
  assert.match(searchPrompt({}),/最多2轮/);assert.match(searchPrompt({}),/核验限制/);
 });
-test('search uses its own effort without changing chat or image settings',async t=>{
+test('search uses its own effort and image tasks use their own model',async t=>{
  const root=path.resolve(__dirname,'../../../data/codex-tests');fs.mkdirSync(root,{recursive:true});
  const state=fs.mkdtempSync(path.join(root,'effort-'));
  t.after(()=>{if(path.dirname(state)!==root)throw Error('Unsafe cleanup');fs.rmSync(state,{recursive:true,force:true});});
- const efforts=[];
+ const selections=[];
  const connect=(cfg,notify)=>{
-  efforts.push(cfg.reasoning_effort);
+  selections.push([cfg.model,cfg.reasoning_effort]);
   return {request:async(method,params)=>{
-   if(method==='session/new')return {sessionId:'session'};
+   if(method==='session/new')return {sessionId:'session',configOptions:[{category:'model',currentValue:cfg.model}]};
    if(method==='session/prompt'){
     notify({sessionId:'session',update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:'Verified evidence'}}});
+    if(cfg.model==='image-model')notify({sessionId:'session',update:{sessionUpdate:'tool_call',content:[{type:'content',content:{type:'image',mimeType:'image/png',data:'aW1hZ2U='}}]}});
     return {stopReason:'end_turn'};
    }
    return {};
   },close:()=>{}};
  };
- for(const kind of ['search','chat']){
-  const result=await execute({id:'abcdefghijklmnop-'+kind,kind,prompt:'test',images:[]},{checkpoint:()=>{}},{state,reasoning_effort:'medium',timeout_seconds:30},connect);
+ for(const kind of ['search','chat','image','sticker']){
+  const result=await execute({id:'abcdefghijklmnop-'+kind,kind,prompt:'test',images:[]},{checkpoint:()=>{}},{state,model:'general-model',image_model:'image-model',reasoning_effort:'medium',timeout_seconds:30},connect);
   assert.equal(result.text,'Verified evidence');assert.ok(result.timings.total_ms>=result.timings.setup_ms);
  }
- assert.deepEqual(efforts,['low','medium']);
+ assert.deepEqual(selections,[['general-model','low'],['general-model','medium'],['image-model','medium'],['image-model','medium']]);
+});
+test('ACP captures GIF image content as a binary artifact',async t=>{
+ const root=path.resolve(__dirname,'../../../data/codex-tests');fs.mkdirSync(root,{recursive:true});
+ const state=fs.mkdtempSync(path.join(root,'gif-'));
+ t.after(()=>{if(path.dirname(state)!==root)throw Error('Unsafe cleanup');fs.rmSync(state,{recursive:true,force:true});});
+ const gif=Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7','base64');
+ const connect=(cfg,notify)=>({request:async method=>{
+  if(method==='session/new')return {sessionId:'gif'};
+  if(method==='session/prompt'){
+   notify({sessionId:'gif',update:{sessionUpdate:'agent_message_chunk',content:{type:'image',mimeType:'image/gif',data:gif.toString('base64')}}});
+   return {stopReason:'end_turn'};
+  }
+  return {};
+ },close:()=>{}});
+ const result=await execute({id:'abcdefghijklmnop',kind:'image',prompt:'GIF example',images:[]},{checkpoint:()=>{}},{state,timeout_seconds:30},connect);
+ assert.equal(result.artifacts.length,1);
+ assert.equal(path.extname(result.artifacts[0].path),'.gif');
+ assert.deepEqual(fs.readFileSync(result.artifacts[0].path),gif);
+});
+test('image deadline finalizes the isolated job and preserves already returned artifacts',async t=>{
+ const root=path.resolve(__dirname,'../../../data/codex-tests');fs.mkdirSync(root,{recursive:true});
+ const state=fs.mkdtempSync(path.join(root,'deadline-'));
+ t.after(()=>{if(path.dirname(state)!==root)throw Error('Unsafe cleanup');fs.rmSync(state,{recursive:true,force:true});});
+ const checkpoints=[];
+ const config={state,model:'general-model',timeout_seconds:240,image_timeout_seconds:420};
+ const connect=(withImage)=>(cfg,notify)=>({request:async(method,params,timeout)=>{
+  if(method==='session/new')return {sessionId:'img'};
+  if(method==='session/prompt'){
+   assert.equal(timeout,420000);
+   if(withImage)notify({sessionId:'img',update:{sessionUpdate:'tool_call',content:{type:'image',mimeType:'image/png',data:'aW1hZ2U='}}});
+   throw Object.assign(Error('ACP timeout; no automatic replay'),{code:'ACP_DEADLINE'});
+  }
+  return {};
+ },close:()=>{}});
+ const context={checkpoint:state=>checkpoints.push(state)};
+ const task={id:'abcdefghijklmnop',kind:'image',prompt:'test',images:[]};
+ await assert.rejects(execute(task,context,config,connect(false)),{code:'image_generation_timeout',uncertain:false});
+ assert.deepEqual(checkpoints,['submitting','image_deadline_reached']);
+ const result=await execute({...task,id:'abcdefghijklmnoq'},context,config,connect(true));
+ assert.equal(result.artifacts.length,1);
+ assert.equal(checkpoints.at(-1),'result_received');
+});
+
+test('a legacy isolated image deadline does not latch the worker on restart',t=>{
+ const root=path.resolve(__dirname,'../../../data/codex-tests');fs.mkdirSync(root,{recursive:true});
+ const state=fs.mkdtempSync(path.join(root,'recovery-'));
+ t.after(()=>{if(path.dirname(state)!==root)throw Error('Unsafe cleanup');fs.rmSync(state,{recursive:true,force:true});});
+ const jobsDir=path.join(state,'jobs');fs.mkdirSync(jobsDir);
+ const id='abcdefghijklmnop';
+ const old={id,kind:'image',state:'uncertain',error:'ACP timeout; no automatic replay'};
+ fs.writeFileSync(path.join(jobsDir,id+'.json'),JSON.stringify(old));
+ const worker=new Jobs({state},()=>{});
+ assert.equal(worker.blocked,false);
+ assert.equal(worker.get(id).state,'failed');
+ assert.equal(worker.get(id).error_code,'image_generation_timeout');
+ const reloaded=new Jobs({state},()=>{});
+ assert.equal(reloaded.blocked,false);
+ assert.equal(reloaded.get(id).state,'failed');
 });
