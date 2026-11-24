@@ -15,11 +15,13 @@ import httpx
 from maibot_sdk import Command, Field, HookHandler, MaiBotPlugin, PluginConfigBase, Tool
 from maibot_sdk.types import ErrorPolicy, HookOrder, ToolParameterInfo, ToolParamType
 
-from .media import ImageError, generate, prepare_references, read_settings, sticker_png, table_html
+from .animation import animation_prompt, looping_gif
+from .media import ImageError, generate, prepare_references, qq_image_retry_payload, read_settings, sticker_png, table_html
 from . import desktop
 from . import maimai
+from .qq_images import read_group_images, reference_picture
 from .qq_reactions import lookup_faces
-from .search_result import SEARCH_REPLY_RULE, search_content
+from .search_result import SEARCH_HANDOFF, SEARCH_REPLY_RULE, search_content
 from .reply_evidence import ReplyEvidence
 from .word_filter import UNAVAILABLE_NOTICE, WordFilter
 
@@ -27,6 +29,31 @@ PERSONA_VOICE = (
     '这条回复按当前人设的性格、用词和态度接住对方的话，不能只把句子缩短。'
     '聊天历史和回复意图用来确定说什么，说法由当前人设决定。轻松话题可以有贴合语境的反应或吐槽，'
     '认真求助时用该人设认真回答；不套客服句式，不为了表演硬塞口癖或自称。'
+)
+REPLYER_WORDING_ONLY = (
+    '最终语气、措辞和篇幅由你按当前人设与群友原话决定。规划参考和工具结果只提供事实与任务线索；'
+    '其中的拟稿、语气建议和话术不作为回复指令。群友明确要求的格式、长度或原文照实处理。'
+)
+PLANNER_FACTS_ONLY = (
+    '规划只负责目标消息、回复时机、工具和附件。调用 reply 时，reply_reference 只写必要事实、'
+    '相关上下文和群友明确要求的格式或长度。无需补充时填写“按目标消息和可见上下文回复”。'
+    '不要拟写群聊正文、选择语气、设计话术或自行指定篇幅。最终表达由 Replyer 决定。'
+)
+PLANNER_WORDING_FIELDS = {'reply_style', 'expression_intent'}
+PLANNER_SEARCH_HANDOFF = '检索结果中的事实、来源和核验限制交给回复模型。'
+PLANNER_IMAGE_REQUESTS = (
+    '“看看你的 OOTD”“给我看看你今天的穿搭”“发张你的今日穿搭照”是在向大肥龙索图，'
+    '即使没有出现“画”或“生成”也应完成图片任务。当前工具列表没有 generate_image 时，'
+    '先调用 tool_search，query 填 generate_image，找到后调用它。拿到图片任务结果前不要用 reply 代答。'
+    '展示大肥龙自己的新穿搭用 kind=image、characters=gpt。'
+    '明确要求生成 GIF、动图或循环动画时用 kind=animation，保留动作主题。'
+    '修改或续画引用图片时，source_image_id 优先填被引用的原消息编号。'
+    '普通文字询问“你今天穿什么”“OOTD 是什么意思”、点评用户的图，或要求找回已发图片，分别按原意处理。'
+    '同一请求已有生图结果时按实际状态处理。工具不可用时如实说明。'
+)
+ANALYSIS_FACTS_ONLY = (
+    '交回供回复模型使用的结论、事实依据、必要推导及不确定之处。保留题目要求的公式、代码或原文。'
+    '无需拟写发给群聊的答复、选择群聊语气或模仿人设。\n\n'
 )
 REACTION_PROBABILITIES = (0, 0.1, 0.3, 0.5, 0.8, 1)
 CASUAL_REACTION_POLICY = (
@@ -42,6 +69,7 @@ QQ_REACTION_POLICY = (
     '有查不到或贴失败的项就说明，别向用户索要已查到的编号，也别把工具返回当成整批都成功。'
 )
 MODERATED_PLATFORMS = {'qq', 'internal', 'webui'}
+QQ_IMAGE_RETRY_DELAY_SECONDS = 4
 
 
 class PluginSection(PluginConfigBase):
@@ -58,6 +86,13 @@ class Reactions(PluginConfigBase):
     cooldown_seconds: int = Field(default=10, ge=0, le=3600, description='闲聊表情冷却秒数')
 
 
+class ReplyVoice(PluginConfigBase):
+    __ui_label__ = '回复措辞'
+    replyer_only: bool = Field(
+        default=True, description='由回复模型决定措辞。规划和表达筛选阶段只保留事实与任务线索。'
+    )
+
+
 class Moderation(PluginConfigBase):
     __ui_label__ = 'QQ 和 WebUI 发言过滤'
     enabled: bool = Field(default=False, description='按 config/local/blocked_words.txt 检查 QQ 和 MaiBot 网页聊天的回复')
@@ -66,11 +101,25 @@ class Moderation(PluginConfigBase):
 class Config(PluginConfigBase):
     plugin: PluginSection = Field(default_factory=PluginSection)
     reactions: Reactions = Field(default_factory=Reactions)
+    reply_voice: ReplyVoice = Field(default_factory=ReplyVoice)
     moderation: Moderation = Field(default_factory=Moderation)
 
 
 def sent_ok(result) -> bool:
     return result is True or (isinstance(result, dict) and result.get('sent') is True)
+
+
+def planner_reply_tool(definition: dict) -> dict:
+    function = definition.get('function', {})
+    if function.get('name') != 'reply':
+        return definition
+    parameters = function.get('parameters', {})
+    properties = parameters.get('properties', {})
+    optional_wording = PLANNER_WORDING_FIELDS.difference(parameters.get('required', []))
+    updated = {name: value for name, value in properties.items() if name not in optional_wording}
+    if 'reply_reference' in updated:
+        updated['reply_reference'] = {**updated['reply_reference'], 'description': PLANNER_FACTS_ONLY}
+    return {**definition, 'function': {**function, 'parameters': {**parameters, 'properties': updated}}}
 
 
 class DaifeilongPlugin(MaiBotPlugin):
@@ -102,6 +151,40 @@ class DaifeilongPlugin(MaiBotPlugin):
 
     async def on_config_update(self, scope: str, config_data: dict, version: str) -> None:
         pass
+
+    @HookHandler('chat.receive.before_process', name='include_qq_quote_images')
+    async def include_qq_quote_images(self, message=None, **kwargs):
+        unchanged = {'action': 'continue'}
+        if not message or message.get('platform') != 'qq':
+            return unchanged
+        group = (message.get('message_info') or {}).get('group_info') or {}
+        group_id = str(group.get('group_id') or '')
+        parts = message.get('raw_message') or []
+        if not group_id or any(part.get('type') == 'image' for part in parts):
+            return unchanged
+        quote = next((part.get('data') for part in parts if part.get('type') == 'reply'), None)
+        if not isinstance(quote, dict) or not quote.get('target_message_id'):
+            return unchanged
+        preview = str(quote.get('target_message_content') or '').lower()
+        if preview and not any(marker in preview for marker in ('[image', '[图片', '【图片', '[图]', '[动画表情')):
+            return unchanged
+        try:
+            raw_secrets = await asyncio.to_thread((self.directory / 'secrets.json').read_text, encoding='utf-8-sig')
+            token = json.loads(raw_secrets).get('onebot_token', '')
+            originals = await read_group_images(token, group_id, str(quote['target_message_id']))
+        except (ImageError, OSError, ValueError):
+            self.ctx.logger.info('QQ 引用原图暂不可取，保留引用预览')
+            return unchanged
+        if not originals:
+            return unchanged
+        images = [
+            {'type': 'image', 'data': '[引用原图]', 'binary_data_base64': base64.b64encode(raw).decode('ascii')}
+            for _, raw in originals
+        ]
+        self.ctx.logger.info(f'QQ 引用原图已补入消息：{len(images)} 张')
+        return {'action': 'continue', 'modified_kwargs': {
+            'message': {**message, 'raw_message': [*parts, *images], 'is_picture': True},
+        }}
 
     @HookHandler('maisaka.reply.before_post_process', name='filter_qq_reply',
                  order=HookOrder.LATE, error_policy=ErrorPolicy.ABORT)
@@ -147,26 +230,43 @@ class DaifeilongPlugin(MaiBotPlugin):
         self.reply_evidence.capture(session_id, items or [])
         tools = {tool.get('function', {}).get('name'): tool.get('function', {}) for tool in tool_definitions or []}
         policies = []
+        updated_tools = tool_definitions
+        replyer_only = self.config.reply_voice.replyer_only and 'reply' in tools
+        if replyer_only:
+            policies.append(PLANNER_FACTS_ONLY)
+            updated_tools = [planner_reply_tool(definition) for definition in tool_definitions]
+        if {'generate_image', 'tool_search'} & tools.keys():
+            policies.append(PLANNER_IMAGE_REQUESTS)
         if {'react_emoji', 'lookup_qq_reaction_ids'} <= tools.keys():
             policies.append(QQ_REACTION_POLICY)
         if self.can_attach_sticker(session_id) and 'attach_emoji' in tools.get('reply', {}).get('parameters', {}).get('properties', {}):
             policies.append(CASUAL_REACTION_POLICY)
+        updated_items = items
         if policies:
             for index, item in enumerate(items or []):
                 if item.get('item_type') == 'SystemMessageItem':
-                    parts = item.get('parts', [])
+                    original_parts = item.get('parts', [])
+                    parts = original_parts
+                    if replyer_only:
+                        # These exact policies also live in chat prompts shared with Replyer.
+                        parts = [
+                            {**part, 'text': part['text'].replace(SEARCH_REPLY_RULE, '').replace(SEARCH_HANDOFF, PLANNER_SEARCH_HANDOFF)}
+                            if part.get('type') == 'text' and isinstance(part.get('text'), str) else part
+                            for part in original_parts
+                        ]
                     new_parts = [
                         {'type': 'text', 'text': '\n\n' + policy}
                         for policy in policies
                         if not any(policy in part.get('text', '') for part in parts)
                     ]
-                    if not new_parts:
-                        break
-                    updated = list(items)
-                    updated[index] = {**item, 'parts': [*parts, *new_parts]}
-                    return {'action': 'continue', 'modified_kwargs': {
-                        **kwargs, 'session_id': session_id, 'tool_definitions': tool_definitions, 'items': updated,
-                    }}
+                    if new_parts or parts != original_parts:
+                        updated_items = list(items)
+                        updated_items[index] = {**item, 'parts': [*parts, *new_parts]}
+                    break
+        if updated_tools != tool_definitions or updated_items is not items:
+            return {'action': 'continue', 'modified_kwargs': {
+                **kwargs, 'session_id': session_id, 'tool_definitions': updated_tools, 'items': updated_items,
+            }}
         return {'action': 'continue'}
 
     def can_attach_sticker(self, session_id):
@@ -183,22 +283,35 @@ class DaifeilongPlugin(MaiBotPlugin):
         for index, item in enumerate(updated):
             call = item.get('tool_call', {})
             args = call.get('args', {})
-            if call.get('func_name') != 'reply' or 'attach_emoji' not in args:
+            if call.get('func_name') != 'reply':
                 continue
-            query = args['attach_emoji']
-            # Context message IDs can point to stickers outside the registered library.
-            semantic = (isinstance(query, str) and bool(query.strip())) or (
-                isinstance(query, dict) and bool(query) and query.keys() <= {'emotion', 'content'}
-                and all(isinstance(value, str) and value.strip() for value in query.values())
-            )
-            if semantic and allowed:
-                allowed = False
-                if random.random() < self.config.reactions.probability:
-                    continue
-            updated[index] = {**item, 'tool_call': {**call, 'args': {key: value for key, value in args.items() if key != 'attach_emoji'}}}
-            changed = True
+            filtered = dict(args)
+            if self.config.reply_voice.replyer_only:
+                for field in PLANNER_WORDING_FIELDS:
+                    filtered.pop(field, None)
+            if 'attach_emoji' in filtered:
+                query = filtered['attach_emoji']
+                # Context message IDs can point to stickers outside the registered library.
+                semantic = (isinstance(query, str) and bool(query.strip())) or (
+                    isinstance(query, dict) and bool(query) and query.keys() <= {'emotion', 'content'}
+                    and all(isinstance(value, str) and value.strip() for value in query.values())
+                )
+                keep_sticker = semantic and allowed and random.random() < self.config.reactions.probability
+                if semantic and allowed:
+                    allowed = False
+                if not keep_sticker:
+                    filtered.pop('attach_emoji')
+            if filtered != args:
+                updated[index] = {**item, 'tool_call': {**call, 'args': filtered}}
+                changed = True
         if changed:
             return {'action': 'continue', 'modified_kwargs': {'output_items': updated}}
+        return {'action': 'continue'}
+
+    @HookHandler('expression.select.before_select', name='skip_upstream_wording_selection')
+    async def skip_upstream_wording_selection(self, **kwargs):
+        if self.config.reply_voice.replyer_only:
+            return {'action': 'continue', 'modified_kwargs': {'candidates': []}}
         return {'action': 'continue'}
 
     @HookHandler('send_service.after_send', name='remember_sent_sticker')
@@ -244,7 +357,13 @@ class DaifeilongPlugin(MaiBotPlugin):
         prompt = self.reply_evidence.prompt(session_id, reply_message_id, extra_prompt)
         if prompt is not None:
             self.ctx.logger.info('已将当前消息的检索正文与来源交给Replyer')
-        voice_prompt = '\n\n'.join(part for part in (prompt or extra_prompt, PERSONA_VOICE) if part)
+        replyer_only = self.config.reply_voice.replyer_only
+        args = kwargs.get('reply_tool_args')
+        if replyer_only and isinstance(args, dict):
+            kwargs['reply_tool_args'] = {name: value for name, value in args.items() if name not in PLANNER_WORDING_FIELDS}
+        voice_prompt = '\n\n'.join(part for part in (
+            prompt or extra_prompt, PERSONA_VOICE, REPLYER_WORDING_ONLY if replyer_only else '',
+        ) if part)
         return {'action': 'continue', 'modified_kwargs': {
             **kwargs, 'session_id': session_id, 'reply_message_id': reply_message_id, 'extra_prompt': voice_prompt,
         }}
@@ -257,6 +376,8 @@ class DaifeilongPlugin(MaiBotPlugin):
             config, credentials, _ = await asyncio.to_thread(read_settings, self.directory)
             if not config.get('agent_worker', {}).get('enabled'):
                 return {'success': False, 'error': 'Codex 后端尚未通过验收或未启用'}
+            if self.config.reply_voice.replyer_only:
+                question = ANALYSIS_FACTS_ONLY + question
             result = await desktop.run_task(config, credentials, 'chat', question)
             return {'success': True, 'task_id': result['id'], 'content': result['text'], 'text': result['text']}
         except ImageError as exc:
@@ -271,7 +392,12 @@ class DaifeilongPlugin(MaiBotPlugin):
             started = time.monotonic()
             result = await desktop.run_task(config, credentials, 'search', query)
             self.ctx.logger.info(f'联网检索完成：{time.monotonic()-started:.1f}s，资料{len(result["text"])}字')
-            return {'success': True, 'task_id': result['id'], 'content': search_content(result['text']), 'text': result['text'], 'message': '按当前人设提炼检索信息回答，勿直接转发网页或堆链接；保留核验限制，链接按需提供，不重复发起同一搜索。'}
+            include_reply_policy = not self.config.reply_voice.replyer_only
+            content = search_content(result['text'], include_reply_policy=include_reply_policy)
+            outcome = {'success': True, 'task_id': result['id'], 'content': content, 'text': result['text']}
+            if include_reply_policy:
+                outcome['message'] = '按当前人设提炼检索信息回答，勿直接转发网页或堆链接；保留核验限制，链接按需提供，不重复发起同一搜索。'
+            return outcome
         except ImageError as exc:
             return {'success': False, 'error': str(exc), 'message': '据实说明失败或待确认，不伪造来源，不重复发起。'}
 
@@ -389,10 +515,32 @@ class DaifeilongPlugin(MaiBotPlugin):
         except Exception as exc:
             self.ctx.logger.error('舞萌联网查歌回复发送失败：' + type(exc).__name__)
 
+    async def resolve_edit_images(self, stream_id, source_image_id, credentials):
+        resolved = await self.ctx.maisaka.context.resolve_image(stream_id, source_image_id)
+        image = resolved.get('image') or {}
+        if resolved.get('success') and image.get('binary_data_base64'):
+            raw = base64.b64decode(image['binary_data_base64'], validate=True)
+            return [await asyncio.to_thread(reference_picture, raw, 1)]
+
+        if re.fullmatch(r'-?[0-9]{1,12}', source_image_id):
+            streams = await self.ctx.chat.get_all_streams(platform='qq')
+            group_id = next(
+                (str(stream.get('group_id') or '') for stream in streams
+                 if stream.get('session_id') == stream_id and stream.get('platform') == 'qq'
+                 and stream.get('is_group_session')),
+                '',
+            ) if isinstance(streams, list) else ''
+            if group_id:
+                originals = await read_group_images(credentials.get('onebot_token', ''), group_id, source_image_id)
+                if originals:
+                    self.ctx.logger.info(f'改图已从 QQ 同群原消息取回 {len(originals)} 张图片')
+                    return originals
+        raise ImageError('无法读取当前聊天中的原图，请重新发送原图')
+
     @Tool('generate_image', timeout_ms=600000,
-          description='用户明确要求作图时生成图片并发到当前聊天。生图、改图、续画用 kind=image，明确要求制作新表情包用 kind=sticker。角色外观通过参考图约束。',
+          description='生成图片并发到当前聊天。生图、改图、续画及“看看你的 OOTD”等穿搭索图用 kind=image。明确要求制作 GIF 动图用 kind=animation。展示大肥龙自己的穿搭用 characters=gpt。静态新表情包用 kind=sticker。',
           parameters=[ToolParameterInfo(name='prompt', param_type=ToolParamType.STRING, description='完整绘图要求，保留用户主题', required=True),
-                      ToolParameterInfo(name='kind', param_type=ToolParamType.STRING, description='image / sticker', required=True),
+                      ToolParameterInfo(name='kind', param_type=ToolParamType.STRING, description='image / animation（GIF 动图） / sticker（静态表情包）', required=True),
                       ToolParameterInfo(name='characters', param_type=ToolParamType.STRING, description='需要参考的人设ID，逗号分隔：gpt,deepseek,gemini,grok,claude,zcode,minimax,glm,qwen。用户明确要求全员时填 all，多张参考图会自动编排。普通作图不强加人设，可为空', required=False),
                       ToolParameterInfo(name='source_image_id', param_type=ToolParamType.STRING, description='改图/续画时必填当前上下文原图的消息编号或工具媒体引用，不得凭空编造；无需改图时留空', required=False)])
     async def generate_image(self, prompt: str, kind: str = 'image', characters: str = '', source_image_id: str = '', stream_id: str = '', **kwargs):
@@ -400,7 +548,7 @@ class DaifeilongPlugin(MaiBotPlugin):
             return {'success': False, 'error': '缺少来源聊天，未生成或发送'}
         if kind == 'casual_sticker':
             return {'success': True, 'skipped': True, 'content': '闲聊表情请随 reply 从表情包库选取。'}
-        if kind not in ('image', 'sticker'):
+        if kind not in ('image', 'sticker', 'animation'):
             return {'success': False, 'error': '未知图片类型'}
         config, credentials, characters_data = await asyncio.to_thread(read_settings, self.directory)
         use_desktop = config.get('images', {}).get('backend', 'api') in ('desktop', 'codex-acp')
@@ -409,27 +557,24 @@ class DaifeilongPlugin(MaiBotPlugin):
             return {'success': False, 'message': '该聊天已有生图任务，未重复提交'}
         async with lock:
             try:
-                originals = []
-                if source_image_id:
-                    resolved = await self.ctx.maisaka.context.resolve_image(stream_id, source_image_id)
-                    image = resolved.get('image', {})
-                    if not resolved.get('success') or not image.get('binary_data_base64'):
-                        raise ImageError('无法读取当前聊天中的原图，未用文字猜测代替改图')
-                    original = base64.b64decode(image['binary_data_base64'], validate=True)
-                    if len(original) > 10 * 1024 * 1024:
-                        raise ImageError('改图原图超过10 MiB')
-                    originals.append(('original.png', original))
+                originals = await self.resolve_edit_images(stream_id, source_image_id, credentials) if source_image_id else []
+                draw_prompt = animation_prompt(prompt) if kind == 'animation' else prompt
+                draw_kind = 'sticker' if kind == 'sticker' else 'image'
                 if use_desktop:
-                    desktop_prompt, references = await asyncio.to_thread(prepare_references, self.directory, characters_data, prompt, characters, originals)
-                    result = await desktop.run_task(config, credentials, 'image' if kind == 'image' else 'sticker', desktop_prompt, references)
+                    desktop_prompt, references = await asyncio.to_thread(prepare_references, self.directory, characters_data, draw_prompt, characters, originals)
+                    if self.config.reply_voice.replyer_only:
+                        desktop_prompt += '\n\n生成图片后，文字只记录实际完成情况或工具限制。由回复模型撰写群聊配文。'
+                    result = await desktop.run_task(config, credentials, draw_kind, desktop_prompt, references)
                     return await self.deliver_desktop_images(result, kind, stream_id, prompt=prompt)
-                raw = await asyncio.to_thread(generate, self.directory, prompt, kind, characters, originals)
+                raw = await asyncio.to_thread(generate, self.directory, draw_prompt, draw_kind, characters, originals)
+                if kind == 'animation':
+                    raw = await asyncio.to_thread(looping_gif, raw)
                 # Preserve output before attempting QQ delivery, including uncertain sends.
                 cache_id = uuid4().hex
                 cache_dir = self.ctx.paths.data_dir / 'generated'
                 await asyncio.to_thread(cache_dir.mkdir, parents=True, exist_ok=True)
-                await asyncio.to_thread((cache_dir / (cache_id + '.image')).write_bytes, raw)
-                result = await self.ctx.send.image(base64.b64encode(raw).decode(), stream_id, return_details=True)
+                await asyncio.to_thread((cache_dir / (cache_id + ('.gif' if kind == 'animation' else '.image'))).write_bytes, raw)
+                result = await self.send_generated_image(raw, kind, stream_id)
                 if not sent_ok(result):
                     return {'success': False, 'cache_id': cache_id, 'message': '图片已生成并缓存，但QQ发送未确认；未重复发送'}
                 return await self.finish_image_delivery(
@@ -441,6 +586,32 @@ class DaifeilongPlugin(MaiBotPlugin):
                 self.ctx.logger.error('生图步骤失败：' + type(exc).__name__)
                 await self.ctx.send.text('生图失败：' + message, stream_id)
                 return {'success': False, 'reported_to_chat': True, 'error': message}
+
+    async def send_image_with_receipt(self, raw: bytes, stream_id: str):
+        # The SDK's detailed send helper keeps only sent and message_id. Retry
+        # decisions need the Host's original reason code as well.
+        return await self.ctx.call_host_method('cap.call', payload={
+            'capability': 'send.image',
+            'args': {'image_base64': base64.b64encode(raw).decode('ascii'),
+                     'stream_id': stream_id, 'return_details': True},
+        })
+
+    async def send_generated_image(self, raw: bytes, kind: str, stream_id: str):
+        result = await self.send_image_with_receipt(raw, stream_id)
+        if not (
+            isinstance(result, dict)
+            and result.get('sent') is False
+            and result.get('error_code') == 'qq_media_transfer_failed'
+        ):
+            return result
+
+        retry_raw = await asyncio.to_thread(qq_image_retry_payload, raw, sticker=kind == 'sticker')
+        self.ctx.logger.info(
+            f'QQ 明确拒绝图片上传，等待 {QQ_IMAGE_RETRY_DELAY_SECONDS} 秒后补发一次'
+            f'（{len(raw)} → {len(retry_raw)} 字节）'
+        )
+        await asyncio.sleep(QQ_IMAGE_RETRY_DELAY_SECONDS)
+        return await self.send_image_with_receipt(retry_raw, stream_id)
 
     async def finish_image_delivery(self, outcome, stream_id, prompt, notes=''):
         try:
@@ -476,15 +647,22 @@ class DaifeilongPlugin(MaiBotPlugin):
         await asyncio.to_thread(cache.mkdir, parents=True, exist_ok=True)
         saved = []
         for artifact in result['artifacts']:
-            raw = sticker_png(artifact['raw']) if artifact['kind'] == 'image' and kind != 'image' else artifact['raw']
-            path = cache / (artifact['id'] + ('.png' if artifact['kind'] == 'image' else '.file'))
+            raw = artifact['raw']
+            suffix = '.file'
+            if artifact['kind'] == 'image':
+                if kind == 'sticker':
+                    raw = await asyncio.to_thread(sticker_png, raw)
+                elif kind == 'animation':
+                    raw = await asyncio.to_thread(looping_gif, raw)
+                suffix = '.gif' if raw.startswith((b'GIF87a', b'GIF89a')) else '.png'
+            path = cache / (artifact['id'] + suffix)
             await asyncio.to_thread(path.write_bytes, raw)
             saved.append((artifact, raw, path))
         sent_count = 0
         try:
             for artifact, raw, path in saved:
                 if artifact['kind'] == 'image':
-                    delivered = await self.ctx.send.image(base64.b64encode(raw).decode(), stream_id, return_details=True)
+                    delivered = await self.send_generated_image(raw, kind, stream_id)
                     confirmed = sent_ok(delivered)
                 else:
                     uploaded = await self.ctx.files.upload(path, name=artifact['name'])

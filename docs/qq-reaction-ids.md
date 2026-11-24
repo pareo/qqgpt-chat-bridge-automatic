@@ -8,7 +8,7 @@ NapCat 的贴表情接口每次接收一个编号。当前 SnowLuma 工具只接
 
 来源 [SnowLuma 适配器](https://github.com/Mai-with-u/MaiBot-SnowLuma-Adapter)、[QFace 表情资源](https://koishi.js.org/QFace/)、[NapCat 贴表情接口](https://napneko.pages.dev/develop/api/doc#set-msg-emoji-like-设置表情回复-normal)。
 
-## QQ 系统表情（372 项）
+## QQ 系统表情（373 项）
 
 | 编号 | 名称 |
 | ---: | --- |
@@ -103,6 +103,7 @@ NapCat 的贴表情接口每次接收一个编号。当前 SnowLuma 工具只接
 | 125 | 转圈 |
 | 129 | 挥手 |
 | 137 | 鞭炮 |
+| 143 | 帅 |
 | 144 | 喝彩 |
 | 146 | 爆筋 |
 | 147 | 棒棒糖 |

@@ -29,7 +29,11 @@ class Jobs {
     this.root=path.join(config.state,'jobs');fs.mkdirSync(this.root,{recursive:true});
     for(const name of fs.readdirSync(this.root).filter(n=>/^[\w-]+\.json$/.test(n))){
       const job=JSON.parse(fs.readFileSync(path.join(this.root,name),'utf8'));
-      if(!TERMINAL.has(job.state)){
+      if(job.state==='uncertain'&&['image','sticker'].includes(job.kind)&&job.error==='ACP timeout; no automatic replay'){
+        // Older workers used to latch the entire queue on this dedicated image deadline.
+        job.state='failed';job.error_code='image_generation_timeout';job.updated_at=new Date().toISOString();
+        this.save(job);
+      }else if(!TERMINAL.has(job.state)){
         job.state=['submitting','awaiting_result'].includes(job.state)?'uncertain':'failed';
         job.error='Worker restarted before completion; task was not replayed';job.updated_at=new Date().toISOString();
         this.save(job);
@@ -48,7 +52,7 @@ class Jobs {
     const job={...task,digest,state:'queued',created_at:new Date().toISOString(),updated_at:new Date().toISOString()};
     this.save(job);this.jobs.set(job.id,job);this.queue.push(job.id);queueMicrotask(()=>this.drain());return this.public(job);
   }
-  public(job){return {id:job.id,kind:job.kind,state:job.state,created_at:job.created_at,updated_at:job.updated_at,...(job.error?{error:job.error}:{}),...(job.result?{result:{...job.result,artifacts:job.result.artifacts.map(({path,...item})=>item)}}:{})};}
+  public(job){return {id:job.id,kind:job.kind,state:job.state,created_at:job.created_at,updated_at:job.updated_at,...(job.error?{error:job.error}:{}),...(job.error_code?{error_code:job.error_code}:{}),...(job.result?{result:{...job.result,artifacts:job.result.artifacts.map(({path,...item})=>item)}}:{})};}
   get(id){const job=this.jobs.get(id);return job?this.public(job):null;}
   artifact(id,artifactId){return this.jobs.get(id)?.result?.artifacts.find(a=>a.id===artifactId);}
   checkpoint(job,state){job.state=state;job.updated_at=new Date().toISOString();this.save(job);}
@@ -63,6 +67,7 @@ class Jobs {
           job.result={text:String(result.text||'').slice(0,150000),backend:result.backend,artifacts,tool_events:result.tool_events||[],timings:result.timings||{}};this.checkpoint(job,'succeeded');
         }catch(error){
           job.error=String(error.message||'Task failed').split(this.config.token).join('[redacted]').slice(0,400);
+          if(['image_generation_timeout','image_artifact_missing'].includes(error.code))job.error_code=error.code;
           const uncertain=error.uncertain||['submitting','awaiting_result'].includes(job.state);
           this.checkpoint(job,uncertain?'uncertain':'failed');this.blocked=!!uncertain;
           if(this.blocked){

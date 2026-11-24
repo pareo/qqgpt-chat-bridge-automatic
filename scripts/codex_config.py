@@ -26,11 +26,17 @@ worker.setdefault('search_reasoning_effort', 'low')
 worker.setdefault('search_max_rounds', 2)
 if not worker.get('model'):
     worker['model'] = config['api']['chat_model']
+image_model = worker.setdefault('image_model', '')
+if not isinstance(image_model, str):
+    raise ValueError('agent_worker.image_model must be a string')
+image_timeout = worker.setdefault('image_timeout_seconds', 420)
+if type(image_timeout) is not int or not 30 <= image_timeout <= 450:
+    raise ValueError('agent_worker.image_timeout_seconds must be 30..450')
 if worker['backend'] != 'codex-acp' or worker['reasoning_effort'] not in ('low', 'medium', 'high'):
     raise ValueError('Invalid Codex backend configuration')
 if worker['search_reasoning_effort'] not in ('low', 'medium', 'high') or type(worker['search_max_rounds']) is not int or not 1 <= worker['search_max_rounds'] <= 5:
     raise ValueError('Invalid search effort or search round budget')
 write(local / 'project.json', config)
 write(local / 'secrets.json', credentials)
-write(generated / 'codex-worker.json', {'token': credentials['agent_worker_token'], 'model': worker['model'], 'reasoning_effort': worker['reasoning_effort'], 'search_reasoning_effort': worker['search_reasoning_effort'], 'search_max_rounds': worker['search_max_rounds'], 'timeout_seconds': worker['timeout_seconds']})
+write(generated / 'codex-worker.json', {'token': credentials['agent_worker_token'], 'model': worker['model'], 'image_model': image_model.strip(), 'image_timeout_seconds': image_timeout, 'reasoning_effort': worker['reasoning_effort'], 'search_reasoning_effort': worker['search_reasoning_effort'], 'search_max_rounds': worker['search_max_rounds'], 'timeout_seconds': worker['timeout_seconds']})
 print('Isolated worker config prepared. GUI backend disabled; live agent routing unchanged.')

@@ -23,6 +23,7 @@ services:
       - ./config/local:/project/config/local:ro
       - ./config/examples:/project/config/examples:ro
       - ./plugins:/project/plugins:ro
+      - maibot-plugin-source:/MaiMBot/plugins
       - ./vendor/qq-connector:/MaiMBot/plugins/qq-connector:ro
       - ./plugins/daifeilong:/MaiMBot/plugins/daifeilong:ro
       - ./config/generated/connector.toml:/MaiMBot/plugins/qq-connector/config.toml
@@ -55,3 +56,6 @@ services:
       - ./config/generated/napcat:/app/napcat/config
       - ./data/qq:/app/.config/QQ
       - ./data/core:/MaiMBot/data
+
+volumes:
+  maibot-plugin-source:

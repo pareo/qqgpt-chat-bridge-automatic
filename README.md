@@ -1,8 +1,8 @@
-# QQGPT Chat Bridge Automatic
+# 大肥龙 · MaiBot + NapCat
 
 独立于旧版窗口桥接程序的新项目。QQ 消息通过 NapCat 的 OneBot WebSocket 接入 MaiBot，普通聊天通过 API 调用。当前新增隔离的 Codex ACP 后端处理搜索、深入分析和图片任务，QQ 收发始终走 NapCat，旧窗口后端已停用。参见[双后端配置与安全边界](docs/codex-backends.md)。
 
-仓库提供通用配置与三种模式示例。账号、群号、API 凭据、私人提示词、角色参考图与登录数据均在本地配置。
+本机版本已迁入原始三套人设与九位角色参考图；这些私人资料和密钥不会进入 Git。下载源码的新用户得到通用示例，替换 `config/local/` 即可带入自己的配置。
 
 ## 快速开始
 
@@ -26,7 +26,7 @@ Windows 完成首次配置后，双击 `run.cmd` 即可启动 MaiBot、NapCat �
 - `config/local/characters.json` 与 `config/local/assets/characters/`：角色资料与参考图。
 - `config/local/blocked_words.txt`：QQ 和 MaiBot 网页聊天的发言过滤词表，UTF-8，每行一个词组。
 
-`bot.listen_mode` 默认为 `allowlist`，只读取 `groups` 列出的群；改为 `all` 可开放该 QQ 账号的全部群，回复仍按来源聊天路由。示例配置只允许填写的群，私聊关闭。实际权限以运行中的适配器策略为准。
+`bot.listen_mode` 默认为 `allowlist`，只读取 `groups` 列出的群；改为 `all` 可开放该 QQ 账号的全部群，回复仍按来源聊天路由。当前私人配置保持测试群白名单，私聊关闭。
 
 `chat.artificial_typos` 默认关闭，避免内置模块为了模拟真人而改坏正确文字；`chat.typing_speed` 默认 0，去掉模拟打字等待。自然分气泡仍保留。
 
@@ -43,7 +43,7 @@ Windows 完成首次配置后，双击 `run.cmd` 即可启动 MaiBot、NapCat �
 
 若尚未填写 API Key，可先运行 `run.cmd setup` 查看 MaiBot 管理页面。此时 QQ 连接器自动停用，不会不停请求模型。Key 不需要发给开发者，也不要放进 Git。
 
-sub2api 在示例配置中使用宿主地址 `http://127.0.0.1:18080`，从容器访问时使用 `http://host.docker.internal:18080/v1`。换服务器后按实际网络修改。请使用 `api-check` 验证自己的可用模型，并分别验证文字、识图和工具调用。Responses 的思考强度使用 `reasoning.effort`，Chat Completions 使用 `reasoning_effort`，项目会按客户端类型生成正确参数。
+本机 sub2api 对宿主的地址是 `http://127.0.0.1:18080`，对容器的默认配置是 `http://host.docker.internal:18080/v1`。换服务器后按实际网络修改。本机已鉴权确认 `gpt-6.1-terra`，并通过文字、识图和函数工具调用测试；其他部署应使用 `api-check` 验证自己的可用模型。Responses 的思考强度使用 `reasoning.effort`，Chat Completions 使用 `reasoning_effort`，项目会按客户端类型生成正确参数。
 
 ## 管理
 
@@ -60,11 +60,13 @@ sub2api 在示例配置中使用宿主地址 `http://127.0.0.1:18080`，从容�
 
 常用模型、人设、群白名单、聊天频率等也能在 MaiBot 原生 WebUI 修改。在「插件配置 → 大肥龙扩展 → 闲聊表情包」可选 0%、10%、30%、50%、80%、100% 的表情概率，并设置冷却时间。日常启动使用当前部署配置。发现本地配置有未应用的改动时，`start` 会提示并继续启动。需要把 `config/local/` 应用到运行配置时，执行 `configure`，它会覆盖本项目管理的面板设置。
 
+「大肥龙扩展 → 回复措辞」默认交给 Replyer。规划和工具阶段仍提供目标、事实和附件，用户本人指定的格式或长度交给 Replyer 执行。可在面板关闭该选项，或在部署配置设置 `reply_voice.replyer_only = false` 后应用配置。
+
 启动时会检查非关键的插件使用时长统计文件。若异常断电等情况导致文件内容损坏，先将原文件保存在同目录的 `plugin_usage.json.corrupt-*`，再重建统计，避免统计故障阻止全部插件加载。此恢复不处理聊天数据库、配置或 QQ 登录文件。
 
 Docker 健康检查和 `status` 也会核实已启用的 QQ 连接器、大肥龙扩展确实加载成功，不再仅依据主进程的 HTTP 端口判断健康；QQ 是否登录由单独的账号检查报告。
 
-群聊命令 `/模式` 查看当前模式，`/模式 大肥龙模式`、`/模式 正经模式`、`/模式 猫娘模式` 切换。任何群友可用，**当前切换作用于这个 Bot 的全部会话**。
+群聊命令：`/模式` 查看，`/模式 大肥龙模式`、`/模式 正经模式`、`/模式 猫娘模式` 切换。任何群友可用，**当前切换作用于这个 Bot 的全部会话**。当前仅开放测试群；开放多个群之前应评估是否需要各群独立模式。
 
 发言过滤默认关闭。在 MaiBot WebUI 的「大肥龙扩展 → QQ 和 WebUI 发言过滤」可打开。若由 `run.cmd configure` 管理配置，将 `config/local/project.json` 的 `moderation.enabled` 设为 `true`。词表保存后自动读取。命中时整条回复替换成固定提示。词表暂时无法读取时沿用最近一次有效词表，启动后尚未读到有效词表时发送审核不可用提示。
 
@@ -79,6 +81,8 @@ Docker 健康检查和 `status` 也会核实已启用的 QQ 连接器、大肥�
 在 QQ 消息上贴表情时，大肥龙可按名称批量查号，再逐个贴到目标消息上。参见 [QQ 贴表情编号大全](docs/qq-reaction-ids.md)。
 
 图片生成超时可能已在上游执行，所以不会盲目重复提交。生成结果先写入 `data/core/plugins/local.daifeilong/generated/`，再按来源聊天发送；未确认发送不会重生成或自动整条重发。
+
+自动生图首次发原图。QQ 明确返回富媒体上传失败时，大肥龙等待 4 秒，在来源会话补发一次。普通图优先使用同尺寸高质量 JPEG，透明图和表情包优先使用无损压缩。原图保存在缓存中。
 
 ## 结构
 
@@ -103,6 +107,8 @@ docs/                  迁移与验收说明
 宿主路径全部相对项目目录解析；容器内固定的 `/MaiMBot`、`/project` 是部署接口，不依赖旧电脑用户名或盘符。
 
 ## 迁移与升级
+
+通过面板安装的插件及其安装目录内的配置保存在 Docker 卷 `daifeilong-maibot_maibot-plugin-source`。迁移到另一台电脑时，需要将这个卷与 `data/` 一起备份和恢复。
 
 1. `run.cmd stop` 后备份 `config/`。需要保留记忆、聊天历史和登录态时，同时备份 `data/`。
 2. 在新电脑下载源码，安装并启动 Docker，运行 `init` 下载锁定的连接器。

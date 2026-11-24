@@ -12,6 +12,7 @@ ALIASES = {
     '猴子': 128053,
     '猴脸': 128053,
 }
+EXTRA_SYSTEM_FACES = {143: '帅'}
 EXTRA_UNICODE_FACES = {'㊗': '祝'}
 
 
@@ -33,6 +34,7 @@ def face_table():
             if node.target.id in ('QQ_FACE_DESCRIPTIONS', '_UNICODE_FACE_DESCRIPTIONS'):
                 tables[node.target.id] = ast.literal_eval(node.value)
     system = {int(key): name for key, name in tables['QQ_FACE_DESCRIPTIONS'].items()}
+    system.update(EXTRA_SYSTEM_FACES)
     unicode_faces = {
         ord(symbol): name
         for symbol, name in {**tables['_UNICODE_FACE_DESCRIPTIONS'], **EXTRA_UNICODE_FACES}.items()

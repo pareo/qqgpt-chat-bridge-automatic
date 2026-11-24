@@ -189,7 +189,8 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         self.cache = tempfile.TemporaryDirectory()
         self.addCleanup(self.cache.cleanup)
         self.plugin._set_context(SimpleNamespace(
-            send=SimpleNamespace(text=AsyncMock(return_value=True), image=AsyncMock(return_value={'sent': True, 'message_id': 'test'})),
+            send=SimpleNamespace(text=AsyncMock(return_value=True)),
+            call_host_method=AsyncMock(return_value={'success': True, 'sent': True, 'message_id': 'test'}),
             personality=SimpleNamespace(list=AsyncMock(return_value={'profiles': [{'name': '大肥龙模式'}, {'name': '正经模式'}]}), switch=AsyncMock(), get_current=AsyncMock(return_value={'name': '大肥龙模式'})),
             logger=SimpleNamespace(info=lambda *a: None, error=lambda *a: None),
             paths=SimpleNamespace(data_dir=Path(self.cache.name)),
@@ -208,7 +209,7 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result['skipped'])
         settings.assert_not_called()
         generate.assert_not_called()
-        self.plugin.ctx.send.image.assert_not_awaited()
+        self.plugin.ctx.call_host_method.assert_not_awaited()
         self.plugin.ctx.send.text.assert_not_awaited()
 
     async def test_explicit_image_bypasses_casual_probability(self):
@@ -218,16 +219,16 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
             result = await self.plugin.generate_image('画一座城堡', kind='image', stream_id='origin')
         generate.assert_called_once()
         self.assertTrue(result['sent'])
-        self.assertEqual(self.plugin.ctx.send.image.call_args.args[1], 'origin')
+        self.assertEqual(self.plugin.ctx.call_host_method.call_args.kwargs['payload']['args']['stream_id'], 'origin')
 
     async def test_failed_delivery_does_not_repeat_generation(self):
         config, credentials = configured()
-        self.plugin.ctx.send.image.return_value = {'sent': False}
+        self.plugin.ctx.call_host_method.return_value = {'success': False, 'sent': False}
         with patch('daifeilong.plugin.read_settings', return_value=(config, credentials, {})), patch('daifeilong.plugin.generate', return_value=b'image') as generate:
             result = await self.plugin.generate_image('城堡', kind='image', stream_id='origin')
         self.assertFalse(result['success'])
         generate.assert_called_once()
-        self.plugin.ctx.send.image.assert_awaited_once()
+        self.plugin.ctx.call_host_method.assert_awaited_once()
 
 
 if __name__ == '__main__':

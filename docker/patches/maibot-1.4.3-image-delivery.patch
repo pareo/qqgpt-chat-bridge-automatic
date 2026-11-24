@@ -1,0 +1,151 @@
+diff --git a/src/services/send_service.py b/src/services/send_service.py
+--- a/src/services/send_service.py
++++ b/src/services/send_service.py
+@@ -14,6 +14,7 @@
+ import asyncio
+ import base64
+ import hashlib
++import json
+ import time
+ from datetime import datetime
+ 
+@@ -40,6 +41,7 @@
+ from src.config.config import global_config
+ from src.platform_io import DeliveryBatch, DriverKind, get_platform_io_manager
+ from src.platform_io.route_key_factory import RouteKeyFactory
++from src.platform_io.types import DeliveryStatus
+ from src.plugin_runtime.hook_payloads import deserialize_session_message, serialize_session_message
+ from src.plugin_runtime.hook_schema_utils import build_object_schema
+ from src.plugin_runtime.host.hook_dispatcher import HookAbortedError, HookDispatchResult
+@@ -845,6 +847,41 @@
+     logger.warning(f"[SendService] Platform IO 发送失败: platform={delivery_batch.route_key.platform} {failed_details}")
+ 
+ 
++class QQMediaTransferFailed(RuntimeError):
++    """QQ or its adapter explicitly failed to prepare or upload an image."""
++
++
++def _qq_media_upload_rejected(batch: DeliveryBatch) -> bool:
++    if batch.route_key.platform != "qq" or len(batch.receipts) != 1:
++        return False
++    receipt = batch.receipts[0]
++    if (
++        receipt.status != DeliveryStatus.FAILED
++        or receipt.driver_id != "gateway:maibot-team.snowluma-adapter:snowluma_gateway"
++    ):
++        return False
++    error = receipt.error or ""
++    # NapCat reads and writes the temporary media before submitting the message.
++    action, _, detail = error.partition(" message=")
++    if action in {"对端动作返回失败: action=send_group_msg", "对端动作返回失败: action=send_private_msg"} and detail in (
++        "ENOMEM: not enough memory, read",
++        "ENOMEM: not enough memory, write",
++    ):
++        return True
++    heading, separator, payload = error.partition("EventRet:")
++    if not separator or "EventChecker Failed: NTEvent serviceAndMethod:NodeIKernelMsgService/sendMsg " not in heading:
++        return False
++    try:
++        response = json.loads(payload)
++    except ValueError:
++        return False
++    return (
++        isinstance(response, dict)
++        and response.get("result") == -1
++        and response.get("errMsg") == "rich media transfer failed"
++    )
++
++
+ async def _send_via_platform_io(
+     message: SessionMessage,
+     *,
+@@ -855,6 +892,7 @@
+     storage_message: bool,
+     show_log: bool,
+     raise_on_hook_abort: bool = False,
++    raise_on_qq_media_failure: bool = False,
+ ) -> Optional[SessionMessage]:
+     """通过 Platform IO 发送消息。
+ 
+@@ -973,6 +1011,8 @@
+         return message
+ 
+     _log_platform_io_failures(delivery_batch)
++    if raise_on_qq_media_failure and _qq_media_upload_rejected(delivery_batch):
++        raise QQMediaTransferFailed("QQ did not send the image")
+     return None
+ 
+ 
+@@ -988,6 +1028,7 @@
+     sync_to_maisaka_history: bool = False,
+     maisaka_source_kind: str = "outbound_send",
+     raise_on_hook_abort: bool = False,
++    raise_on_qq_media_failure: bool = False,
+ ) -> Optional[SessionMessage]:
+     """统一发送消息；raise_on_hook_abort 允许调用方接收带原因的 HookAbortedError。"""
+     if not message.message_id:
+@@ -1003,6 +1044,7 @@
+         storage_message=storage_message,
+         show_log=show_log,
+         raise_on_hook_abort=raise_on_hook_abort,
++        raise_on_qq_media_failure=raise_on_qq_media_failure,
+     )
+     if sent_message is not None and sync_to_maisaka_history:
+         _sync_sent_message_to_maisaka_history(
+@@ -1110,6 +1152,7 @@
+     raise_on_hook_abort: bool = False,
+     *,
+     quote_message: Optional[MaiMessage] = None,
++    raise_on_qq_media_failure: bool = False,
+ ) -> Optional[SessionMessage]:
+     """向指定目标构建并发送消息。
+ 
+@@ -1181,6 +1224,7 @@
+             sync_to_maisaka_history=sync_to_maisaka_history,
+             maisaka_source_kind=maisaka_source_kind,
+             raise_on_hook_abort=raise_on_hook_abort,
++            raise_on_qq_media_failure=raise_on_qq_media_failure,
+         )
+         if sent_message is not None:
+             logger.debug(f"[SendService] 成功发送消息到 {stream_id}")
+@@ -1188,7 +1232,7 @@
+ 
+         logger.error("[SendService] 发送消息失败")
+         return None
+-    except HookAbortedError:
++    except (HookAbortedError, QQMediaTransferFailed):
+         raise
+     except Exception as exc:
+         logger.exception(f"[SendService] 发送消息时出错: {exc}")
+@@ -1328,6 +1372,8 @@
+     reply_message: Optional[MaiMessage] = None,
+     sync_to_maisaka_history: bool = False,
+     maisaka_source_kind: str = "outbound_send",
++    *,
++    raise_on_qq_media_failure: bool = False,
+ ) -> Optional[SessionMessage]:
+     """向指定流发送图片消息，并返回发送成功后的消息对象。"""
+     return await _send_to_target_with_message(
+@@ -1339,6 +1385,7 @@
+         reply_message=reply_message,
+         sync_to_maisaka_history=sync_to_maisaka_history,
+         maisaka_source_kind=maisaka_source_kind,
++        raise_on_qq_media_failure=raise_on_qq_media_failure,
+     )
+ 
+ 
+diff --git a/src/plugin_runtime/capabilities/core.py b/src/plugin_runtime/capabilities/core.py
+--- a/src/plugin_runtime/capabilities/core.py
++++ b/src/plugin_runtime/capabilities/core.py
+@@ -531,8 +531,11 @@
+                 storage_message=bool(args.get("storage_message", True)),
+                 sync_to_maisaka_history=sync_to_maisaka_history,
+                 maisaka_source_kind=maisaka_source_kind,
++                raise_on_qq_media_failure=bool(args.get("return_details", False)),
+             )
+             return self._build_send_result(args, sent_message)
++        except send_api.QQMediaTransferFailed:
++            return {**self._build_send_result(args), "error_code": "qq_media_transfer_failed"}
+         except Exception as exc:
+             logger.error(f"[cap.send.image] 执行失败: {exc}", exc_info=True)
+             return self._build_send_result(args, error=str(exc))

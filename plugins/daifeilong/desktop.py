@@ -51,7 +51,10 @@ async def run_task(config, credentials, kind, prompt, images=(), *, client=None,
         if response.status_code != 202:
             raise DesktopError(f'任务被拒绝（HTTP {response.status_code}）；任务 {task_id}')
         job, errors = response.json(), 0
-        deadline = time.monotonic() + min(540, worker.get('timeout_seconds', 240) + worker.get('queue_wait_seconds', 60))
+        timeout = worker.get('timeout_seconds', 240)
+        if agent.get('enabled') and kind in ('image', 'sticker'):
+            timeout = agent.get('image_timeout_seconds', 420) + 30  # ACP session setup
+        deadline = time.monotonic() + min(540, timeout + worker.get('queue_wait_seconds', 60))
         while job.get('state') not in ('succeeded', 'failed', 'uncertain'):
             if time.monotonic() >= deadline:
                 raise DesktopError(f'等待超时，可能仍执行，未重复提交；任务 {task_id}')
@@ -67,6 +70,10 @@ async def run_task(config, credentials, kind, prompt, images=(), *, client=None,
         if job.get('id') != task_id:
             raise DesktopError('任务归属不匹配，未转发')
         if job['state'] != 'succeeded':
+            if job.get('error_code') == 'image_generation_timeout':
+                raise DesktopError(f'生图超时，后端未返回图片；任务 {task_id}')
+            if job.get('error_code') == 'image_artifact_missing':
+                raise DesktopError(f'生图后端结束时未返回图片附件；任务 {task_id}')
             raise DesktopError(f'任务失败或结果待确认，未自动重提；任务 {task_id}')
         result = job.get('result', {})
         if len(result.get('artifacts', [])) > 8:
